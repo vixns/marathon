@@ -157,8 +157,8 @@ private[impl] object DVDIProviderValidations extends ExternalVolumeValidations {
         volume =>
           volume.mode is equalTo(Mode.RW)
           volume.containerPath is notOneOf(DotPaths: _*)
-          // same as for local persistent volumes
-          volume.containerPath should matchRegexFully(NoSlashesPattern)
+          // should also match NoSlashesPattern
+          volume.containerPath should matchRegexFully(AbsolutePathOrNoSlashPattern)
       }
 
       val validDockerVolume = validator[ExternalVolume] { volume =>
