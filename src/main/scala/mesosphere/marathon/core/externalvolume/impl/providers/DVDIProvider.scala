@@ -187,7 +187,7 @@ private[impl] object DVDIProviderValidations extends ExternalVolumeValidations {
 
     validator[AppDefinition] { app =>
       app should haveUniqueExternalVolumeNames
-      app should haveOnlyOneInstance
+      //app should haveOnlyOneInstance
       app.container is valid(optional(validContainer))
       app.upgradeStrategy is valid(UpgradeStrategy.validForResidentTasks)
     }
