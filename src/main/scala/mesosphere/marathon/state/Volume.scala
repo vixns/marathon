@@ -144,6 +144,7 @@ object PersistentVolume {
 object PathPatterns {
   lazy val NoSlashesPattern = """^[^/]*$""".r
   lazy val AbsolutePathPattern = """^/[^/].*$""".r
+  lazy val AbsolutePathOrNoSlashPattern = """(^/[^/].*$|^[^/]*$)""".r
   lazy val DotPaths = Seq[String](".", "..")
 }
 

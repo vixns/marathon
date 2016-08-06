@@ -749,29 +749,6 @@ class AppsResourceTest extends MarathonSpec with MarathonActorSupport with Match
     e.getMessage should include("/container/volumes(0)/external/name")
   }
 
-  test("Creating an app with an external volume w/ MESOS and absolute containerPath should fail validation") {
-    Given("An app with a named, non-'agent' volume provider")
-    val response = createAppWithVolumes(
-      "MESOS",
-      """
-        |    "volumes": [{
-        |      "containerPath": "/var",
-        |      "external": {
-        |        "size": 10,
-        |        "provider": "dvdi",
-        |        "name": "namedfoo",
-        |        "options": {"dvdi/driver": "bar"}
-        |      },
-        |      "mode": "RW"
-        |    }]
-      """.stripMargin
-    )
-
-    Then("The return code indicates create failure")
-    response.getStatus should be(422)
-    response.getEntity.toString should include("/container/volumes(0)/containerPath")
-  }
-
   test("Creating an app with an external volume w/ MESOS and nested containerPath should fail validation") {
     Given("An app with a named, non-'agent' volume provider")
     val response = createAppWithVolumes(
