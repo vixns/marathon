@@ -357,7 +357,7 @@ class AppDeployIntegrationTest
 
   test("list app versions") {
     Given("a new app")
-    val v1 = appProxy(testBasePath / "app", "v1", instances = 1, withHealth = false)
+    val v1 = appProxy(testBasePath / s"${UUID.randomUUID()}", "v1", instances = 1, withHealth = false)
     val createResponse = marathon.createAppV2(v1)
     createResponse.code should be (201)
     waitForEvent("deployment_success")
@@ -569,7 +569,7 @@ class AppDeployIntegrationTest
     val deploymentId = extractDeploymentIds(create).head
 
     Then("the deployment gets created")
-    WaitTestSupport.validFor("deployment visible", 1.second)(marathon.listDeploymentsForBaseGroup().value.size == 1)
+    WaitTestSupport.validFor("deployment visible", 5.second)(marathon.listDeploymentsForBaseGroup().value.size == 1)
 
     When("the deployment is rolled back")
     val delete = marathon.deleteDeployment(deploymentId, force = false)
