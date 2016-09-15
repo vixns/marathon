@@ -1,6 +1,6 @@
 package mesosphere.marathon.integration
 
-import mesosphere.marathon.core.health.HealthCheck
+import mesosphere.marathon.core.health.MarathonHttpHealthCheck
 import mesosphere.marathon.integration.setup._
 import mesosphere.marathon.state._
 import org.scalatest.{ BeforeAndAfter, GivenWhenThen, Matchers }
@@ -14,8 +14,9 @@ class GracefulTaskKillIntegrationTest
     with BeforeAndAfter
     with GivenWhenThen {
 
-  //clean up state before running the test case
-  before(cleanUp())
+  before {
+    cleanUp()
+  }
 
   // this command simulates a 'long terminating' application
   // note: Integration test does not interpret symbolic names (SIGTERM=15), therefore signal 15 is used.
@@ -23,7 +24,7 @@ class GracefulTaskKillIntegrationTest
   val taskKillGracePeriod = taskKillGraceDuration.seconds
   val appCommand: String = s"""trap \"sleep ${taskKillGraceDuration + 1}\" 15 && sleep 100000"""
 
-  test("create a 'long terminating' app with custom taskKillGracePeriod duration") {
+  ignore("create a 'long terminating' app with custom taskKillGracePeriod duration - https://github.com/mesosphere/marathon/issues/4214") {
     Given("a new 'long terminating' app with taskKillGracePeriod set to 10 seconds")
     val app = AppDefinition(
       testBasePath / "app",
@@ -55,7 +56,7 @@ class GracefulTaskKillIntegrationTest
     waitedForTaskKilledEvent.toMillis should be >= taskKillGracePeriod.toMillis
   }
 
-  test("create a 'short terminating' app with custom taskKillGracePeriod duration") {
+  ignore("create a 'short terminating' app with custom taskKillGracePeriod duration - https://github.com/mesosphere/marathon/issues/4214") {
     Given("a new 'short terminating' app with taskKillGracePeriod set to 10 seconds")
     val app = AppDefinition(
       testBasePath / "app",
@@ -88,5 +89,9 @@ class GracefulTaskKillIntegrationTest
     waitedForTaskKilledEvent.toMillis should be < taskKillGracePeriod.toMillis
   }
 
-  def healthCheck = HealthCheck(gracePeriod = 20.second, interval = 1.second, maxConsecutiveFailures = 10)
+  def healthCheck = MarathonHttpHealthCheck(
+    gracePeriod = 20.second,
+    interval = 1.second,
+    maxConsecutiveFailures = 10,
+    portIndex = Some(0))
 }

@@ -291,7 +291,7 @@
     },
     "disk": {
       "type": "number",
-      "description": "How much disk space is needed for this application. This number does not have to be an integer, but can be a fraction.",
+      "description": "How much disk space in MB is needed for this application. This number does not have to be an integer, but can be a fraction.",
       "minimum": 0
     },
     "env": {
@@ -406,8 +406,8 @@
           },
           "protocol": {
             "type": "string",
-            "description": "Protocol of the requests to be performed. One of HTTP, HTTPS, TCP or COMMAND.",
-            "enum": ["HTTP", "HTTPS", "TCP", "COMMAND"]
+            "description": "Protocol of the requests to be performed. One of HTTP, HTTPS, TCP, COMMAND, MESOS_HTTP, MESOS_HTTPS or MESOS_TCP.",
+            "enum": ["HTTP", "HTTPS", "TCP", "COMMAND", "MESOS_HTTP", "MESOS_HTTPS", "MESOS_TCP"]
           },
           "timeoutSeconds": {
             "type": "integer",

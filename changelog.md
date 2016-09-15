@@ -1,7 +1,6 @@
-## Changes from 1.2.0 to (unreleased version)
+## Changes from 1.3.0 to (unreleased version)
 
-
-## Changes from 1.1.0 to 1.2.0
+## Changes from 1.1.0 to 1.3.0
 
 ### Recommended Mesos version is 1.0.0
 
@@ -23,8 +22,18 @@ Prior versions of Marathon have tried to authenticate whenever a principal has b
 Framework authentication is now explicit. There is a command line toggle option for authentication: `--mesos_authentication`.
 This toggle is disabled by default. You must now supply this flag to use framework authentication.
 
+#### Changed default values for TASK_LOST GC timeout
+If a task is declared lost in Mesos, but the reason indicates it might come back, Marathon waits for the task to come back for a certain amount of time.
+To configure the behavior you can use `--task_lost_expunge_gc`, `--task_lost_expunge_initial_delay`, `--task_lost_expunge_interval`.
+Until version 1.3 Marathon has handled TASK_LOST very conservatively: it waits for 24 hours for every task to come back.
+This version reduces the timeout to 75 seconds (task_lost_expunge_gc), while checking every 30 seconds (task_lost_expunge_interval).
+
+
+
 
 ### Overview
+#### Universal Containerizer
+Starting with version 1.3.0, Marathon supports docker container images without having the Docker Containerizer depend on a Docker Engine. Instead the Mesos containerizer with native AppC support added in Apache Mesos version 1.0 (released July 2016) directly uses native OS features to configure and start Docker containers and to provide isolation.
 
 #### TASK_LOST behavior
 If Mesos agents get detached from the Mesos master, all tasks are assumed LOST.
@@ -58,6 +67,12 @@ Please note: there is no native Mesos support for secrets at the moment.
 We have defined a plugin interface to handle secrets.
 You need a plugin in order to use this feature effectively.
 
+#### Support for Nvidia GPU
+It is now possible to use `gpus` as Nvidia GPU resource required in your AppDefinition.
+`gpus` is defined as a first-class entity and can be supported by Mesos containerizer when
+`--enable_features gpu_resources` flag is set in Marathon.
+Please note: this feature is valid only when Mesos is compiled with Nvidia GPU support.
+
 #### Support all attribute types with constraints 
 Non-text type attributes (such as scalar or range) are now supported.
 
@@ -83,7 +98,9 @@ __Caution: this change might lead to Marathon rejecting app definitions that use
 - Fixes #3991 - Use suppressOffers (#3992)
 
 ### Fixed issues
-
+- Fixed lost tasks garbage collection (#4203)
+- Fix container changes on app update. (#4185)
+- #3795 - Added GPU support for Marathon API (#4112)
 - #3972 - network/cni support (#3974)
 - #4129 - TaskOpProcessorImplTest is flaky (#4148)
 - #4093 - Refactor MigrationTo1_2Test using async/wait (#4128)
@@ -110,6 +127,12 @@ __Caution: this change might lead to Marathon rejecting app definitions that use
 - #3723 - Fix validation of duplicate volume names (#3737)
 - #3505 - Adding documentation for ReadinessChecks (#3711)
 - #3648 - LaunchQueue: Do not defer TaskChanged (#3721) 
+
+## Version 1.2.0 skipped
+__Caution: Will not be promoting a Marathon v1.2 RC to a final release.__
+
+We have been focusing our efforts on two big new features for the upcoming DC/OS v1.8 release and had to work around the feature freeze in the Marathon v1.2 release candidates. Therefore, we discontinued work on the v1.2 release in favor of a new Marathon v1.3 release candidate.
+See: https://groups.google.com/forum/#!topic/marathon-framework/j6fNc4xk5tQ
 
 
 ## Changes from 1.0.0 to 1.1.0

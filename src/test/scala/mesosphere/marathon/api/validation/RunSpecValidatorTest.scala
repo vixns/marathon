@@ -1,13 +1,13 @@
 package mesosphere.marathon.api.validation
 
 import com.wix.accord.validate
-import mesosphere.marathon.Protos.{ Constraint, HealthCheckDefinition }
+import mesosphere.marathon.Protos.Constraint
 import mesosphere.marathon._
 import mesosphere.marathon.api.v2.Validation._
 import mesosphere.marathon.api.v2.json.Formats
+import mesosphere.marathon.core.health.{ MarathonHttpHealthCheck, MesosCommandHealthCheck }
 import mesosphere.marathon.core.plugin.{ PluginDefinitions, PluginManager }
 import mesosphere.marathon.core.readiness.ReadinessCheck
-import mesosphere.marathon.core.health.HealthCheck
 import mesosphere.marathon.state._
 import org.apache.mesos.{ Protos => mesos }
 import org.scalatest.{ GivenWhenThen, Matchers }
@@ -18,7 +18,8 @@ import scala.reflect.ClassTag
 
 class RunSpecValidatorTest extends MarathonSpec with Matchers with GivenWhenThen {
 
-  implicit lazy val validAppDefinition = AppDefinition.validAppDefinition(PluginManager.None)
+  implicit lazy val validAppDefinition = AppDefinition.validAppDefinition(Set())(PluginManager.None)
+  implicit lazy val validContainer = Container.validContainer(Set())
 
   test("only cmd") {
     val app = AppDefinition(
@@ -151,9 +152,8 @@ class RunSpecValidatorTest extends MarathonSpec with Matchers with GivenWhenThen
       id = PathId("/test"),
       cmd = Some("true"),
       healthChecks = Set(
-        HealthCheck(
-          protocol = HealthCheckDefinition.Protocol.COMMAND,
-          command = Some(Command("curl http://localhost:$PORT"))
+        MesosCommandHealthCheck(
+          command = Command("curl http://localhost:$PORT")
         )
       )
     )
@@ -220,6 +220,15 @@ class RunSpecValidatorTest extends MarathonSpec with Matchers with GivenWhenThen
       id = PathId("/test"),
       args = Some("test" :: Nil),
       container = Some(f.validDockerContainer))
+    assert(validate(app).isSuccess)
+    MarathonTestHelper.validateJsonSchema(app)
+  }
+
+  test("mesos container only") {
+    val f = new Fixture
+    val app = AppDefinition(
+      id = PathId("/test"),
+      container = Some(f.validMesosDockerContainer))
     assert(validate(app).isSuccess)
     MarathonTestHelper.validateJsonSchema(app)
   }
@@ -644,7 +653,7 @@ class RunSpecValidatorTest extends MarathonSpec with Matchers with GivenWhenThen
       )),
       portDefinitions = List.empty,
       healthChecks = Set(
-        HealthCheck(
+        MarathonHttpHealthCheck(
           path = Some("/"),
           protocol = Protos.HealthCheckDefinition.Protocol.HTTP,
           port = Some(8000),
@@ -697,7 +706,7 @@ class RunSpecValidatorTest extends MarathonSpec with Matchers with GivenWhenThen
       }
       def definitions: PluginDefinitions = PluginDefinitions.None
     }
-    AppDefinition.validAppDefinition(pm)(app).isFailure shouldBe true
+    AppDefinition.validAppDefinition(Set())(pm)(app).isFailure shouldBe true
 
     Given("An app without an invalid label")
     val app2 = AppDefinition(
@@ -708,7 +717,7 @@ class RunSpecValidatorTest extends MarathonSpec with Matchers with GivenWhenThen
       ))
     )
     Then("the validation succeeds")
-    AppDefinition.validAppDefinition(pm)(app2).isSuccess shouldBe true
+    AppDefinition.validAppDefinition(Set())(pm)(app2).isSuccess shouldBe true
   }
 
   class Fixture {
