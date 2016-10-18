@@ -1,17 +1,22 @@
 package mesosphere.marathon.core.appinfo.impl
 
+import mesosphere.marathon.MarathonSchedulerService
 import mesosphere.marathon.core.appinfo.{ AppInfo, EnrichedTask, TaskCounts, TaskStatsByVersion }
 import mesosphere.marathon.core.base.ConstantClock
+import mesosphere.marathon.core.condition.Condition
 import mesosphere.marathon.core.health.{ Health, HealthCheckManager }
+import mesosphere.marathon.core.instance.Instance.InstanceState
+import mesosphere.marathon.core.instance.{ Instance, TestInstanceBuilder }
+import mesosphere.marathon.core.pod.{ HostNetwork, MesosContainer, PodDefinition }
 import mesosphere.marathon.core.readiness.ReadinessCheckResult
 import mesosphere.marathon.core.task.Task
-import mesosphere.marathon.core.task.tracker.TaskTracker
+import mesosphere.marathon.core.task.tracker.InstanceTracker
+import mesosphere.marathon.raml.Resources
 import mesosphere.marathon.state._
-import mesosphere.marathon.storage.repository.TaskFailureRepository
-import mesosphere.marathon.test.{ MarathonSpec, MarathonTestHelper, Mockito }
+import mesosphere.marathon.storage.repository.{ ReadOnlyPodRepository, TaskFailureRepository }
+import mesosphere.marathon.test.{ MarathonSpec, Mockito }
 import mesosphere.marathon.upgrade.DeploymentManager.DeploymentStepInfo
 import mesosphere.marathon.upgrade.{ DeploymentPlan, DeploymentStep }
-import mesosphere.marathon.MarathonSchedulerService
 import org.scalatest.{ GivenWhenThen, Matchers }
 import play.api.libs.json.Json
 
@@ -22,18 +27,21 @@ import scala.concurrent.duration._
 class AppInfoBaseDataTest extends MarathonSpec with GivenWhenThen with Mockito with Matchers {
 
   class Fixture {
+    val runSpecId = PathId("/test")
     lazy val clock = ConstantClock()
-    lazy val taskTracker = mock[TaskTracker]
+    lazy val taskTracker = mock[InstanceTracker]
     lazy val healthCheckManager = mock[HealthCheckManager]
     lazy val marathonSchedulerService = mock[MarathonSchedulerService]
     lazy val taskFailureRepository = mock[TaskFailureRepository]
+    lazy val podRepository = mock[ReadOnlyPodRepository]
 
     lazy val baseData = new AppInfoBaseData(
       clock,
       taskTracker,
       healthCheckManager,
       marathonSchedulerService,
-      taskFailureRepository
+      taskFailureRepository,
+      podRepository
     )
 
     def verifyNoMoreInteractions(): Unit = {
@@ -46,6 +54,9 @@ class AppInfoBaseDataTest extends MarathonSpec with GivenWhenThen with Mockito w
 
   val app = AppDefinition(PathId("/test"))
   val other = AppDefinition(PathId("/other"))
+  val pod = PodDefinition(id = PathId("/pod"), networks = Seq(HostNetwork), containers = Seq(
+    MesosContainer(name = "ct1", resources = Resources(0.01, 32))
+  ))
 
   test("not embedding anything results in no calls") {
     val f = new Fixture
@@ -63,13 +74,16 @@ class AppInfoBaseDataTest extends MarathonSpec with GivenWhenThen with Mockito w
   test("requesting tasks retrieves tasks from taskTracker and health infos") {
     val f = new Fixture
     Given("three tasks in the task tracker")
-    val running1 = MarathonTestHelper.runningTask("task1")
-    val running2 = MarathonTestHelper.runningTask("task2")
-    val running3 = MarathonTestHelper.runningTask("task3")
+    val builder1 = TestInstanceBuilder.newBuilder(f.runSpecId).addTaskRunning()
+    val builder2 = TestInstanceBuilder.newBuilder(f.runSpecId).addTaskRunning()
+    val builder3 = TestInstanceBuilder.newBuilder(f.runSpecId).addTaskRunning()
+    val running1: Task = builder1.pickFirstTask()
+    val running2: Task = builder2.pickFirstTask()
+    val running3: Task = builder3.pickFirstTask()
 
     import scala.concurrent.ExecutionContext.Implicits.global
-    f.taskTracker.tasksByApp()(global) returns
-      Future.successful(TaskTracker.TasksByApp.of(TaskTracker.AppTasks.forTasks(app.id, Iterable(running1, running2, running3))))
+    f.taskTracker.instancesBySpec()(global) returns
+      Future.successful(InstanceTracker.InstancesBySpec.of(InstanceTracker.SpecInstances.forInstances(app.id, Iterable(builder1.getInstance(), builder2.getInstance(), builder3.getInstance()))))
 
     val alive = Health(running2.taskId, lastSuccess = Some(Timestamp(1)))
     val unhealthy = Health(running3.taskId, lastFailure = Some(Timestamp(1)))
@@ -88,7 +102,8 @@ class AppInfoBaseDataTest extends MarathonSpec with GivenWhenThen with Mockito w
     Then("we get a tasks object in the appInfo")
     appInfo.maybeTasks should not be empty
     appInfo.maybeTasks.get.map(_.appId.toString) should have size 3
-    appInfo.maybeTasks.get.map(_.task.taskId.idString).toSet should be (Set("task1", "task2", "task3"))
+    appInfo.maybeTasks.get.map(_.task.taskId.idString).toSet should be (Set(
+      running1.taskId.idString, running2.taskId.idString, running3.taskId.idString))
 
     appInfo should be(AppInfo(app, maybeTasks = Some(
       Seq(
@@ -99,7 +114,7 @@ class AppInfoBaseDataTest extends MarathonSpec with GivenWhenThen with Mockito w
     )))
 
     And("the taskTracker should have been called")
-    verify(f.taskTracker, times(1)).tasksByApp()(global)
+    verify(f.taskTracker, times(1)).instancesBySpec()(global)
 
     And("the healthCheckManager as well")
     verify(f.healthCheckManager, times(1)).statuses(app.id)
@@ -111,19 +126,24 @@ class AppInfoBaseDataTest extends MarathonSpec with GivenWhenThen with Mockito w
   test("requesting task counts only retrieves tasks from taskTracker and health stats") {
     val f = new Fixture
     Given("one staged and two running tasks in the taskTracker")
-    val staged = MarathonTestHelper.stagedTask("task1")
-    val running = MarathonTestHelper.runningTask("task2")
-    val running2 = MarathonTestHelper.runningTask("task3")
+    val stagedBuilder = TestInstanceBuilder.newBuilder(f.runSpecId).addTaskStaged()
+    val staged: Task = stagedBuilder.pickFirstTask()
+
+    val runningBuilder = TestInstanceBuilder.newBuilder(f.runSpecId).addTaskRunning()
+    val running: Task = runningBuilder.pickFirstTask()
+
+    val running2Builder = TestInstanceBuilder.newBuilder(f.runSpecId).addTaskRunning()
+    val running2: Task = running2Builder.pickFirstTask()
 
     import scala.concurrent.ExecutionContext.Implicits.global
-    f.taskTracker.tasksByApp()(global) returns
-      Future.successful(TaskTracker.TasksByApp.of(TaskTracker.AppTasks.forTasks(app.id, Iterable(staged, running, running2))))
+    f.taskTracker.instancesBySpec()(global) returns
+      Future.successful(InstanceTracker.InstancesBySpec.of(InstanceTracker.SpecInstances.forInstances(app.id, Iterable(stagedBuilder.getInstance(), runningBuilder.getInstance(), running2Builder.getInstance()))))
 
     f.healthCheckManager.statuses(app.id) returns Future.successful(
       Map(
-        Task.Id("task1") -> Seq(),
-        Task.Id("task2") -> Seq(Health(Task.Id("task2"), lastFailure = Some(Timestamp(1)))),
-        Task.Id("task3") -> Seq(Health(Task.Id("task3"), lastSuccess = Some(Timestamp(2))))
+        staged.taskId -> Seq(),
+        running.taskId -> Seq(Health(running.taskId, lastFailure = Some(Timestamp(1)))),
+        running2.taskId -> Seq(Health(running2.taskId, lastSuccess = Some(Timestamp(2))))
       )
     )
 
@@ -136,7 +156,7 @@ class AppInfoBaseDataTest extends MarathonSpec with GivenWhenThen with Mockito w
     )))
 
     And("the taskTracker should have been called")
-    verify(f.taskTracker, times(1)).tasksByApp()(global)
+    verify(f.taskTracker, times(1)).instancesBySpec()(global)
 
     And("the healthCheckManager as well")
     verify(f.healthCheckManager, times(1)).statuses(app.id)
@@ -260,14 +280,17 @@ class AppInfoBaseDataTest extends MarathonSpec with GivenWhenThen with Mockito w
   test("requesting taskStats") {
     val f = new Fixture
     Given("one staged and two running tasks in the taskTracker")
-    val staged = MarathonTestHelper.stagedTask("task1", stagedAt = (f.clock.now() - 10.seconds).toDateTime.getMillis)
-    val running = MarathonTestHelper.runningTask("task2", stagedAt = (f.clock.now() - 11.seconds).toDateTime.getMillis)
-    val running2 = MarathonTestHelper.runningTask("task3", stagedAt = (f.clock.now() - 11.seconds).toDateTime.getMillis)
+    val stagedBuilder = TestInstanceBuilder.newBuilder(f.runSpecId).addTaskStaged(stagedAt = Timestamp((f.clock.now() - 10.seconds).toDateTime.getMillis))
+    val staged: Task = stagedBuilder.pickFirstTask()
+    val runningBuilder = TestInstanceBuilder.newBuilder(f.runSpecId).addTaskRunning(stagedAt = Timestamp((f.clock.now() - 11.seconds).toDateTime.getMillis))
+    val running: Task = runningBuilder.pickFirstTask()
+    val running2Builder = TestInstanceBuilder.newBuilder(f.runSpecId).addTaskRunning(stagedAt = Timestamp((f.clock.now() - 11.seconds).toDateTime.getMillis))
+    val running2: Task = running2Builder.pickFirstTask()
 
     import scala.concurrent.ExecutionContext.Implicits.global
-    val tasks: Set[Task] = Set(staged, running, running2)
-    f.taskTracker.tasksByApp()(global) returns
-      Future.successful(TaskTracker.TasksByApp.of(TaskTracker.AppTasks.forTasks(app.id, tasks)))
+    val instances: Set[Instance] = Set(stagedBuilder.getInstance(), runningBuilder.getInstance(), running2Builder.getInstance())
+    f.taskTracker.instancesBySpec()(global) returns
+      Future.successful(InstanceTracker.InstancesBySpec.of(InstanceTracker.SpecInstances.forInstances(app.id, instances)))
 
     val statuses: Map[Task.Id, Seq[Health]] = Map(
       staged.taskId -> Seq(),
@@ -291,12 +314,12 @@ class AppInfoBaseDataTest extends MarathonSpec with GivenWhenThen with Mockito w
 
       appInfo should be(AppInfo(
         app,
-        maybeTaskStats = Some(TaskStatsByVersion(f.clock.now(), app.versionInfo, tasks, statuses))
+        maybeTaskStats = Some(TaskStatsByVersion(f.clock.now(), app.versionInfo, instances.flatMap(_.tasks), statuses))
       ))
     }
 
     And("the taskTracker should have been called")
-    verify(f.taskTracker, times(1)).tasksByApp()(global)
+    verify(f.taskTracker, times(1)).instancesBySpec()(global)
 
     And("the healthCheckManager as well")
     verify(f.healthCheckManager, times(1)).statuses(app.id)
@@ -331,6 +354,81 @@ class AppInfoBaseDataTest extends MarathonSpec with GivenWhenThen with Mockito w
 
     And("we have no more interactions")
     f.verifyNoMoreInteractions()
+  }
+
+  def fakeInstance(pod: PodDefinition)(implicit f: Fixture): Instance = {
+    val dummyAgent = Instance.AgentInfo("", None, Nil)
+    val instanceId = Instance.Id.forRunSpec(pod.id)
+    Instance(
+      instanceId = instanceId,
+      agentInfo = dummyAgent,
+      state = InstanceState(
+        condition = Condition.Running,
+        since = f.clock.now(),
+        healthy = None),
+      tasksMap = pod.containers.map { ct =>
+        val taskId = Task.Id.forInstanceId(instanceId, Some(ct))
+        taskId -> Task.LaunchedEphemeral(
+          taskId = taskId,
+          agentInfo = dummyAgent,
+          runSpecVersion = pod.version,
+          status = Task.Status.apply(
+            stagedAt = f.clock.now(),
+            startedAt = Some(f.clock.now()),
+            mesosStatus = None,
+            condition = Condition.Running),
+          hostPorts = Nil)
+      }.toMap,
+      runSpecVersion = pod.version)
+  }
+
+  test("pod statuses xref the correct spec versions") {
+    implicit val f = new Fixture
+    val v1 = f.clock.now()
+    val podspec1 = pod.copy(version = v1)
+
+    f.clock += 1.minute
+
+    // the same as podspec1 but with a new version and a renamed container
+    val v2 = f.clock.now()
+    val podspec2 = pod.copy(version = v2, containers = pod.containers.map(_.copy(name = "ct2")))
+
+    Given("multiple versions of the same pod specification")
+    def findPodSpecByVersion(version: Timestamp): Option[PodDefinition] = {
+      if (v1 == version) Some(podspec1)
+      else if (v2 == version) Some(podspec2)
+      else Option.empty[PodDefinition]
+    }
+
+    f.clock += 1.minute
+
+    When("requesting pod instance status")
+    val instanceV1 = fakeInstance(podspec1)
+    val maybeStatus1 = f.baseData.podInstanceStatus(instanceV1)(findPodSpecByVersion)
+
+    Then("instance referring to v1 spec should reference container ct1")
+    maybeStatus1 should be('nonEmpty)
+    maybeStatus1.foreach { status =>
+      status.containers.size should be(1)
+      status.containers(0).name should be("ct1")
+    }
+
+    And("instance referring to v2 spec should reference container ct2")
+    val instanceV2 = fakeInstance(podspec2)
+    val maybeStatus2 = f.baseData.podInstanceStatus(instanceV2)(findPodSpecByVersion)
+
+    maybeStatus2 should be('nonEmpty)
+    maybeStatus2.foreach { status =>
+      status.containers.size should be(1)
+      status.containers(0).name should be("ct2")
+    }
+
+    And("instance referring to a bogus version doesn't have any status")
+    val v3 = f.clock.now()
+    val instanceV3 = fakeInstance(pod.copy(version = v3))
+    val maybeStatus3 = f.baseData.podInstanceStatus(instanceV3)(findPodSpecByVersion)
+
+    maybeStatus3 should be ('empty)
   }
 
 }

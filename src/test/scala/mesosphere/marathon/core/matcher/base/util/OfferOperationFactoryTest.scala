@@ -1,9 +1,10 @@
-package mesosphere.marathon.core.matcher.base.util
+package mesosphere.marathon
+package core.matcher.base.util
 
 import mesosphere.marathon.core.task.Task
 import mesosphere.marathon.state.{ DiskSource, PathId, PersistentVolume, PersistentVolumeInfo }
+import mesosphere.marathon.stream._
 import mesosphere.marathon.test.{ MarathonSpec, MarathonTestHelper, Mockito }
-import mesosphere.marathon.WrongConfigurationException
 import org.apache.mesos.{ Protos => Mesos }
 import org.scalatest.{ GivenWhenThen, Matchers }
 
@@ -14,7 +15,7 @@ class OfferOperationFactoryTest extends MarathonSpec with GivenWhenThen with Moc
 
     Given("a factory without principal or role")
     val factory = new OfferOperationFactory(None, None)
-    val taskInfo = MarathonTestHelper.makeOneCPUTask("123").build()
+    val taskInfo = MarathonTestHelper.makeOneCPUTask(Task.Id.forRunSpec(f.runSpecId)).build()
 
     When("We create a launch operation")
     val operation = factory.launch(taskInfo)
@@ -42,14 +43,12 @@ class OfferOperationFactoryTest extends MarathonSpec with GivenWhenThen with Moc
   test("Reserve operation succeeds") {
     val f = new Fixture
 
-    import scala.collection.JavaConverters._
-
     Given("A simple task")
     val factory = new OfferOperationFactory(Some("principal"), Some("role"))
-    val task = MarathonTestHelper.makeOneCPUTask("123")
+    val task = MarathonTestHelper.makeOneCPUTask(Task.Id.forRunSpec(f.runSpecId))
 
     When("We create a reserve operation")
-    val operation = factory.reserve(f.frameworkId, Task.Id(task.getTaskId), task.getResourcesList.asScala)
+    val operation = factory.reserve(f.frameworkId, Task.Id(task.getTaskId), task.getResourcesList)
 
     Then("The operation is as expected")
     operation.getType shouldEqual Mesos.Offer.Operation.Type.RESERVE
@@ -71,7 +70,7 @@ class OfferOperationFactoryTest extends MarathonSpec with GivenWhenThen with Moc
 
     Given("a factory without principal")
     val factory = new OfferOperationFactory(Some("principal"), Some("role"))
-    val task = MarathonTestHelper.makeOneCPUTask("123")
+    val task = MarathonTestHelper.makeOneCPUTask(Task.Id.forRunSpec(f.runSpecId))
     val volumes = Seq(f.localVolume("mount"))
     val resource = MarathonTestHelper.scalarResource("disk", 1024)
 
@@ -100,18 +99,18 @@ class OfferOperationFactoryTest extends MarathonSpec with GivenWhenThen with Moc
   }
 
   class Fixture {
+    val runSpecId = PathId("/my-app")
     val frameworkId = MarathonTestHelper.frameworkId
     val principal = Some("principal")
     val role = Some("role")
     val factory = new OfferOperationFactory(principal, role)
 
     def localVolume(containerPath: String): Task.LocalVolume = {
-      val appId = PathId("/my-app")
       val pv = PersistentVolume(
         containerPath = containerPath,
         persistent = PersistentVolumeInfo(size = 10),
         mode = Mesos.Volume.Mode.RW)
-      Task.LocalVolume(Task.LocalVolumeId(appId, pv), pv)
+      Task.LocalVolume(Task.LocalVolumeId(runSpecId, pv), pv)
     }
   }
 }

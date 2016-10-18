@@ -1,13 +1,13 @@
-package mesosphere.marathon.state
+package mesosphere.marathon
+package state
 
 import com.wix.accord._
 import mesosphere.marathon.api.v2.ValidationHelper
-import mesosphere.marathon.state.AppDefinition.VersionInfo
+import mesosphere.marathon.core.pod.{ MesosContainer, PodDefinition }
+import mesosphere.marathon.raml.Resources
 import mesosphere.marathon.state.PathId._
+import mesosphere.marathon.stream._
 import org.scalatest.{ FunSpec, GivenWhenThen, Matchers }
-
-import scala.collection.JavaConverters._
-import scala.collection.immutable.Seq
 
 class GroupTest extends FunSpec with GivenWhenThen with Matchers {
 
@@ -213,12 +213,82 @@ class GroupTest extends FunSpec with GivenWhenThen with Matchers {
         .message should be ("Groups and Applications may not have the same identifier.")
     }
 
+    it("cannot replace a group with pods by an app definition") {
+      Given("an existing group /some/nested which does contain an pod")
+      val current =
+        Group
+          .empty
+          .makeGroup("/some/nested/path".toPath)
+          .makeGroup("/some/nested/path2".toPath)
+          .updatePod(
+            "/some/nested/path2/pod".toPath,
+            _ => PodDefinition(id = PathId("/some/nested/path2/pod")),
+            Timestamp.now())
+
+      current.transitiveGroups.map(_.id.toString) should be(
+        Set("/", "/some", "/some/nested", "/some/nested/path", "/some/nested/path2"))
+
+      When("requesting to put an app definition")
+      val changed = current.updateApp(
+        "/some/nested".toPath,
+        _ => AppDefinition("/some/nested".toPath, cmd = Some("true")),
+        Timestamp.now())
+
+      Then("the group with same path has NOT been replaced by the new app definition")
+      current.transitiveGroups.map(_.id.toString) should be(
+        Set("/", "/some", "/some/nested", "/some/nested/path", "/some/nested/path2"))
+      changed.transitiveAppIds.map(_.toString) should be(Set("/some/nested"))
+      changed.transitivePodsById.keySet.map(_.toString) should be(Set("/some/nested/path2/pod"))
+
+      Then("the conflict will be detected by our V2 API model validation")
+      val result = validate(changed)(Group.validRootGroup(maxApps = None, Set()))
+      result.isFailure should be(true)
+      ValidationHelper.getAllRuleConstrains(result).head
+        .message should be ("Groups and Applications may not have the same identifier.")
+    }
+
+    it("cannot replace a group with pods by an pod definition") {
+      Given("an existing group /some/nested which does contain an pod")
+      val current =
+        Group
+          .empty
+          .makeGroup("/some/nested/path".toPath)
+          .makeGroup("/some/nested/path2".toPath)
+          .updatePod(
+            "/some/nested/path2/pod".toPath,
+            _ => PodDefinition(id = PathId("/some/nested/path2/pod")),
+            Timestamp.now())
+
+      current.transitiveGroups.map(_.id.toString) should be(
+        Set("/", "/some", "/some/nested", "/some/nested/path", "/some/nested/path2"))
+
+      When("requesting to put a pod definition")
+      val changed = current.updatePod(
+        "/some/nested".toPath,
+        _ => PodDefinition(
+          id = "/some/nested".toPath,
+          containers = Seq(MesosContainer(name = "foo", resources = Resources()))),
+        Timestamp.now())
+
+      Then("the group with same path has NOT been replaced by the new pod definition")
+      current.transitiveGroups.map(_.id.toString) should be(
+        Set("/", "/some", "/some/nested", "/some/nested/path", "/some/nested/path2"))
+      changed.transitiveAppIds.map(_.toString) should be(Set.empty[String])
+      changed.transitivePodsById.keySet.map(_.toString) should be(Set("/some/nested", "/some/nested/path2/pod"))
+
+      Then("the conflict will be detected by our V2 API model validation")
+      val result = validate(changed)(Group.validRootGroup(maxApps = None, Set()))
+      result.isFailure should be(true)
+      ValidationHelper.getAllRuleConstrains(result).head
+        .message should be ("Groups and Pods may not have the same identifier.")
+    }
+
     it("can marshal and unmarshal from to protos") {
       Given("a group with subgroups")
       val now = Timestamp(11)
       val fullVersion = VersionInfo.forNewConfig(now)
-      val app1 = AppDefinition("/test/group1/app1".toPath, args = Some(Seq("a", "b", "c")), versionInfo = fullVersion)
-      val app2 = AppDefinition("/test/group2/app2".toPath, args = Some(Seq("a", "b")), versionInfo = fullVersion)
+      val app1 = AppDefinition("/test/group1/app1".toPath, args = Seq("a", "b", "c"), versionInfo = fullVersion)
+      val app2 = AppDefinition("/test/group2/app2".toPath, args = Seq("a", "b"), versionInfo = fullVersion)
       val current = Group(
         id = Group.empty.id,
         groups = Set(
@@ -269,7 +339,7 @@ class GroupTest extends FunSpec with GivenWhenThen with Matchers {
 
       When("the dependency graph is computed")
       val dependencyGraph = current.dependencyGraph
-      val ids: Set[PathId] = dependencyGraph.vertexSet.asScala.map(_.id).toSet
+      val ids: Set[PathId] = dependencyGraph.vertexSet.map(_.id)
 
       Then("the dependency graph is correct")
       ids should have size 8
@@ -286,7 +356,7 @@ class GroupTest extends FunSpec with GivenWhenThen with Matchers {
       )
       ids should equal (expectedIds)
 
-      current.appsWithNoDependencies should have size 2
+      current.runSpecsWithNoDependencies should have size 2
     }
 
     it("can turn a group with app dependencies into a dependency graph") {
@@ -322,7 +392,7 @@ class GroupTest extends FunSpec with GivenWhenThen with Matchers {
 
       When("the dependency graph is calculated")
       val dependencyGraph = current.dependencyGraph
-      val ids: Set[PathId] = dependencyGraph.vertexSet.asScala.map(_.id).toSet
+      val ids: Set[PathId] = dependencyGraph.vertexSet.map(_.id)
 
       Then("the dependency graph is correct")
       ids should have size 8
@@ -339,7 +409,7 @@ class GroupTest extends FunSpec with GivenWhenThen with Matchers {
       )
       ids should be(expected)
 
-      current.appsWithNoDependencies should have size 2
+      current.runSpecsWithNoDependencies should have size 2
     }
 
     it("can turn a group without dependencies into a dependency graph") {
@@ -379,7 +449,7 @@ class GroupTest extends FunSpec with GivenWhenThen with Matchers {
       val dependencyGraph = current.dependencyGraph
 
       Then("the dependency graph is correct")
-      current.appsWithNoDependencies should have size 8
+      current.runSpecsWithNoDependencies should have size 8
     }
 
     it("detects a cyclic dependency graph") {

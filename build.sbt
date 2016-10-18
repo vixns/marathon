@@ -1,12 +1,14 @@
 import com.amazonaws.auth.{EnvironmentVariableCredentialsProvider, InstanceProfileCredentialsProvider}
 import com.typesafe.sbt.SbtScalariform.ScalariformKeys
 import com.typesafe.sbt.packager.docker.ExecCmd
+import mesosphere.raml.RamlGeneratorPlugin
 import sbt.Tests.SubProcess
 import sbtrelease.ReleaseStateTransformations._
+
 import scalariform.formatter.preferences.{AlignArguments, AlignParameters, AlignSingleLineCaseStatements, CompactControlReadability, DanglingCloseParenthesis, DoubleIndentClassDeclaration, FormatXml, FormattingPreferences, IndentSpaces, IndentWithTabs, MultilineScaladocCommentsStartOnFirstLine, PlaceScaladocAsterisksBeneathSecondAsterisk, Preserve, PreserveSpaceBeforeArguments, SpaceBeforeColon, SpaceInsideBrackets, SpaceInsideParentheses, SpacesAroundMultiImports, SpacesWithinPatternBinders}
 
 lazy val IntegrationTest = config("integration") extend Test
-lazy val formattingTestArg = Tests.Argument("-eDFG")
+def formattingTestArg(target: File) = Tests.Argument("-u", (target / "test-reports").getAbsolutePath, "-eDFG")
 
 // 0.1.15 has tons of false positives in async/await
 resolvers += Resolver.sonatypeRepo("snapshots")
@@ -73,19 +75,31 @@ lazy val commonSettings = inConfig(IntegrationTest)(Defaults.testTasks) ++ Seq(
     "-Xfuture",
     "-Xlog-reflective-calls",
     "-Xlint",
-    "-Ywarn-unused-import",
     "-Xfatal-warnings",
+    "-Ywarn-unused-import",
     "-Yno-adapted-args",
-    "-Ywarn-numeric-widen"
+    "-Ywarn-numeric-widen",
+    //"-Ywarn-dead-code", We should turn this one on soon
+    "-Ywarn-inaccessible",
+    "-Ywarn-infer-any",
+    "-Ywarn-nullary-override",
+    "-Ywarn-nullary-unit",
+    //"-Ywarn-unused", We should turn this one on soon
+    "-Ywarn-unused-import",
+    //"-Ywarn-value-discard", We should turn this one on soon.
+    "-Ybackend:GenBCode",
+    "-Yclosure-elim",
+    "-Ydead-code"
   ),
   scalacOptions in Test ~= { _.filter(co => !(co.startsWith("-Xplugin") || co.startsWith("-P"))) },
   javacOptions in Compile ++= Seq(
     "-encoding", "UTF-8", "-source", "1.8", "-target", "1.8", "-Xlint:unchecked", "-Xlint:deprecation"
   ),
   resolvers ++= Seq(
-    "Mesosphere Public Repo" at "http://downloads.mesosphere.com/maven",
     "Typesafe Releases" at "http://repo.typesafe.com/typesafe/releases/",
-    "Spray Maven Repository" at "http://repo.spray.io/"
+    "Spray Maven Repository" at "http://repo.spray.io/",
+    "Apache Shapshots" at "https://repository.apache.org/content/repositories/snapshots/",
+    "Mesosphere Public Repo" at "http://downloads.mesosphere.com/maven"
   ),
   cancelable in Global := true,
   releaseProcess := Seq[ReleaseStep](
@@ -104,16 +118,16 @@ lazy val commonSettings = inConfig(IntegrationTest)(Defaults.testTasks) ++ Seq(
   )),
   s3credentials := new EnvironmentVariableCredentialsProvider() | new InstanceProfileCredentialsProvider(),
 
+  testListeners := Seq(),
   parallelExecution in Test := true,
   testForkedParallel in Test := true,
-  testOptions in Test := Seq(formattingTestArg, Tests.Argument("-l", "mesosphere.marathon.IntegrationTest")),
+  testOptions in Test := Seq(formattingTestArg(target.value), Tests.Argument("-l", "mesosphere.marathon.IntegrationTest")),
   fork in Test := true,
 
   fork in IntegrationTest := true,
-  testOptions in IntegrationTest := Seq(formattingTestArg, Tests.Argument("-n", "mesosphere.marathon.IntegrationTest")),
+  testOptions in IntegrationTest := Seq(formattingTestArg(target.value), Tests.Argument("-n", "mesosphere.marathon.IntegrationTest")),
   parallelExecution in IntegrationTest := false,
   testForkedParallel in IntegrationTest := false,
-  testListeners in IntegrationTest := Seq(new JUnitXmlTestsListener((target.value / "test-reports" / "integration").getAbsolutePath)),
   testGrouping in IntegrationTest := (definedTests in IntegrationTest).value.map { test =>
     Tests.Group(name = test.name, tests = Seq(test),
       runPolicy = SubProcess(ForkOptions((javaHome in IntegrationTest).value,
@@ -160,12 +174,12 @@ lazy val packagingSettings = Seq(
     "echo \"deb http://repos.mesosphere.com/debian jessie-testing main\" | tee -a /etc/apt/sources.list.d/mesosphere.list && \\" +
     "echo \"deb http://repos.mesosphere.com/debian jessie main\" | tee -a /etc/apt/sources.list.d/mesosphere.list && \\" +
     "apt-get update && \\" +
-    "apt-get install --no-install-recommends -y --force-yes mesos=1.0.0-2.0.89.debian81 && \\" +
+    s"apt-get install --no-install-recommends -y --force-yes mesos=${Dependency.V.MesosDebian} && \\" +
     "apt-get clean")
   )
 )
 
-lazy val pluginInterface = (project in file("plugin-interface"))
+lazy val `plugin-interface` = (project in file("plugin-interface"))
     .enablePlugins(GitBranchPrompt, CopyPasteDetector)
     .configs(IntegrationTest)
     .settings(commonSettings : _*)
@@ -177,8 +191,9 @@ lazy val pluginInterface = (project in file("plugin-interface"))
 
 lazy val marathon = (project in file("."))
   .configs(IntegrationTest)
-  .enablePlugins(BuildInfoPlugin, GitBranchPrompt, JavaServerAppPackaging, DockerPlugin, CopyPasteDetector)
-  .dependsOn(pluginInterface)
+  .enablePlugins(BuildInfoPlugin, GitBranchPrompt,
+    JavaServerAppPackaging, DockerPlugin, CopyPasteDetector, RamlGeneratorPlugin)
+  .dependsOn(`plugin-interface`)
   .settings(commonSettings: _*)
   .settings(formatSettings: _*)
   .settings(teamCitySetEnvSettings: _*)
@@ -193,7 +208,9 @@ lazy val marathon = (project in file("."))
         git.gitHeadCommit.value.getOrElse("unknown")
       }
     ),
-    buildInfoPackage := "mesosphere.marathon"
+    buildInfoPackage := "mesosphere.marathon",
+    sourceGenerators in Compile <+= ramlGenerate in Compile,
+    scapegoatIgnoredFiles ++= Seq(s"${sourceManaged.value.getPath}/.*")
   )
 
 lazy val `mesos-simulation` = (project in file("mesos-simulation"))

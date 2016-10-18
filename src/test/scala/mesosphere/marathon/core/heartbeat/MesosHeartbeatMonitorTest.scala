@@ -1,11 +1,11 @@
 package mesosphere.marathon.core.heartbeat
 
-import akka.testkit.TestProbe
 import java.util.UUID
 
+import akka.testkit.TestProbe
 import mesosphere.marathon.test.{ MarathonActorSupport, MarathonSpec, Mockito }
-import org.apache.mesos._
 import org.apache.mesos.Protos._
+import org.apache.mesos._
 import org.scalatest.{ BeforeAndAfterAll, Matchers }
 
 class MesosHeartbeatMonitorTest extends MarathonActorSupport
@@ -112,7 +112,7 @@ class MesosHeartbeatMonitorTest extends MarathonActorSupport
     val fakeDriver = mock[SchedulerDriver]
     val reactor = monitor.heartbeatReactor(fakeDriver)
 
-    reactor.onSkip()
+    reactor.onSkip(1)
     verify(fakeDriver, times(1)).reconcileTasks(any)
 
     reactor.onFailure()

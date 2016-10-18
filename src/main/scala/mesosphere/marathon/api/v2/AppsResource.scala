@@ -1,4 +1,5 @@
-package mesosphere.marathon.api.v2
+package mesosphere.marathon
+package api.v2
 
 import java.net.URI
 import javax.inject.Inject
@@ -12,20 +13,16 @@ import mesosphere.marathon.api.v2.Validation._
 import mesosphere.marathon.api.v2.json.AppUpdate
 import mesosphere.marathon.api.v2.json.Formats._
 import mesosphere.marathon.api.{ AuthResource, MarathonMediaType, RestResource }
-import mesosphere.marathon.core.appinfo.{ AppInfo, AppInfoService, AppSelector, TaskCounts }
+import mesosphere.marathon.core.appinfo.{ AppInfo, AppInfoService, AppSelector, Selector, TaskCounts }
 import mesosphere.marathon.core.base.Clock
+import mesosphere.marathon.core.event.ApiPostEvent
 import mesosphere.marathon.core.group.GroupManager
 import mesosphere.marathon.core.plugin.PluginManager
-import mesosphere.marathon.core.event.ApiPostEvent
 import mesosphere.marathon.plugin.auth._
-import mesosphere.marathon.state.AppDefinition.VersionInfo
 import mesosphere.marathon.state.PathId._
 import mesosphere.marathon.state._
-import mesosphere.marathon.{ ConflictingChangeException, MarathonConf, MarathonSchedulerService, UnknownAppException }
+import mesosphere.marathon.stream._
 import play.api.libs.json.Json
-
-import scala.collection.JavaConverters._
-import scala.collection.immutable.Seq
 
 @Path("v2/apps")
 @Consumes(Array(MediaType.APPLICATION_JSON))
@@ -37,10 +34,12 @@ class AppsResource @Inject() (
     service: MarathonSchedulerService,
     appInfoService: AppInfoService,
     val config: MarathonConf,
-    val authenticator: Authenticator,
-    val authorizer: Authorizer,
     groupManager: GroupManager,
-    pluginManager: PluginManager) extends RestResource with AuthResource {
+    pluginManager: PluginManager)(implicit
+  val authenticator: Authenticator,
+    val authorizer: Authorizer) extends RestResource with AuthResource {
+
+  import AppsResource._
 
   private[this] val ListApps = """^((?:.+/)|)\*$""".r
   implicit lazy val appDefinitionValidator = AppDefinition.validAppDefinition(config.availableFeatures)(pluginManager)
@@ -56,7 +55,7 @@ class AppsResource @Inject() (
     @Context req: HttpServletRequest): Response = authenticated(req) { implicit identity =>
     val selector = selectAuthorized(search(Option(cmd), Option(id), Option(label)))
     // additional embeds are deprecated!
-    val resolvedEmbed = InfoEmbedResolver.resolveApp(embed.asScala.toSet) +
+    val resolvedEmbed = InfoEmbedResolver.resolveApp(embed) +
       AppInfo.Embed.Counts + AppInfo.Embed.Deployments
     val mapped = result(appInfoService.selectAppsBy(selector, resolvedEmbed))
     Response.ok(jsonObjString("apps" -> mapped)).build()
@@ -110,7 +109,7 @@ class AppsResource @Inject() (
     @PathParam("id") id: String,
     @QueryParam("embed") embed: java.util.Set[String],
     @Context req: HttpServletRequest): Response = authenticated(req) { implicit identity =>
-    val resolvedEmbed = InfoEmbedResolver.resolveApp(embed.asScala.toSet) ++ Set(
+    val resolvedEmbed = InfoEmbedResolver.resolveApp(embed) ++ Set(
       // deprecated. For compatibility.
       AppInfo.Embed.Counts, AppInfo.Embed.Tasks, AppInfo.Embed.LastTaskFailure, AppInfo.Embed.Deployments
     )
@@ -119,7 +118,7 @@ class AppsResource @Inject() (
       result(groupManager.group(groupId)) match {
         case Some(group) =>
           checkAuthorization(ViewGroup, group)
-          val appsWithTasks = result(appInfoService.selectAppsInGroup(groupId, allAuthorized, resolvedEmbed))
+          val appsWithTasks = result(appInfoService.selectAppsInGroup(groupId, authzSelector, resolvedEmbed))
           ok(jsonObjString("*" -> appsWithTasks))
         case None =>
           unknownGroup(groupId)
@@ -127,7 +126,7 @@ class AppsResource @Inject() (
     }
 
     def app(appId: PathId): Response = {
-      result(appInfoService.selectApp(appId, allAuthorized, resolvedEmbed)) match {
+      result(appInfoService.selectApp(appId, authzSelector, resolvedEmbed)) match {
         case Some(appInfo) =>
           checkAuthorization(ViewRunSpec, appInfo.app)
           ok(jsonObjString("app" -> appInfo))
@@ -271,22 +270,22 @@ class AppsResource @Inject() (
 
   private[v2] def search(cmd: Option[String], id: Option[String], label: Option[String]): AppSelector = {
     def containCaseInsensitive(a: String, b: String): Boolean = b.toLowerCase contains a.toLowerCase
-    val selectors = Seq[Option[AppSelector]](
-      cmd.map(c => AppSelector(_.cmd.exists(containCaseInsensitive(c, _)))),
-      id.map(s => AppSelector(app => containCaseInsensitive(s, app.id.toString))),
+    val selectors = Seq[Option[Selector[AppDefinition]]](
+      cmd.map(c => Selector(_.cmd.exists(containCaseInsensitive(c, _)))),
+      id.map(s => Selector(app => containCaseInsensitive(s, app.id.toString))),
       label.map(new LabelSelectorParsers().parsed)
     ).flatten
-    AppSelector.forall(selectors)
-  }
-
-  def allAuthorized(implicit identity: Identity): AppSelector = new AppSelector {
-    override def matches(app: AppDefinition): Boolean = isAuthorized(ViewRunSpec, app)
+    Selector.forall(selectors)
   }
 
   def selectAuthorized(fn: => AppSelector)(implicit identity: Identity): AppSelector = {
-    val authSelector = new AppSelector {
-      override def matches(app: AppDefinition): Boolean = isAuthorized(ViewRunSpec, app)
-    }
-    AppSelector.forall(Seq(authSelector, fn))
+    Selector.forall(Seq(authzSelector, fn))
+  }
+}
+
+object AppsResource {
+
+  def authzSelector(implicit authz: Authorizer, identity: Identity): AppSelector = Selector[AppDefinition] { app =>
+    authz.isAuthorized(identity, ViewRunSpec, app)
   }
 }

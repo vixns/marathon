@@ -9,8 +9,8 @@ import mesosphere.marathon.core.launchqueue.LaunchQueueConfig
 import mesosphere.marathon.core.matcher.manager.OfferMatcherManagerConfig
 import mesosphere.marathon.core.plugin.PluginManagerConfiguration
 import mesosphere.marathon.core.task.jobs.TaskJobsConfig
-import mesosphere.marathon.core.task.termination.TaskKillConfig
-import mesosphere.marathon.core.task.tracker.TaskTrackerConfig
+import mesosphere.marathon.core.task.termination.KillConfig
+import mesosphere.marathon.core.task.tracker.InstanceTrackerConfig
 import mesosphere.marathon.core.task.update.TaskStatusUpdateConfig
 import mesosphere.marathon.io.storage.StorageProvider
 import mesosphere.marathon.state.ResourceRole
@@ -20,12 +20,22 @@ import org.rogach.scallop.ScallopConf
 
 import scala.sys.SystemProperties
 
+/**
+  * We have to cache in a separated object because [[mesosphere.marathon.MarathonConf]] is a trait and thus every
+  * instance would call {{{java.net.InetAddress.getLocalHost}}} which is blocking. We want to call it only once.
+  * Note: This affect mostly tests.
+  */
+private[marathon] object MarathonConfHostNameCache {
+
+  lazy val hostname = java.net.InetAddress.getLocalHost.getHostName
+}
+
 trait MarathonConf
     extends ScallopConf
     with EventConf with GroupManagerConfig with LaunchQueueConfig with LaunchTokenConfig with LeaderProxyConf
     with MarathonSchedulerServiceConfig with OfferMatcherManagerConfig with OfferProcessorConfig
-    with PluginManagerConfiguration with ReviveOffersConfig with StorageConf with TaskKillConfig
-    with TaskJobsConfig with TaskStatusUpdateConfig with TaskTrackerConfig with UpgradeConfig with ZookeeperConf {
+    with PluginManagerConfiguration with ReviveOffersConfig with StorageConf with KillConfig
+    with TaskJobsConfig with TaskStatusUpdateConfig with InstanceTrackerConfig with UpgradeConfig with ZookeeperConf {
 
   lazy val mesosMaster = opt[String](
     "master",
@@ -111,7 +121,7 @@ trait MarathonConf
     "hostname",
     descr = "The advertised hostname that is used for the communication with the Mesos master. " +
       "The value is also stored in the persistent store so another standby host can redirect to the elected leader.",
-    default = Some(java.net.InetAddress.getLocalHost.getHostName))
+    default = Some(MarathonConfHostNameCache.hostname))
 
   lazy val webuiUrl = opt[String](
     "webui_url",

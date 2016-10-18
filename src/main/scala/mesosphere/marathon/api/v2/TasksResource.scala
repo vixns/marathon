@@ -1,4 +1,5 @@
-package mesosphere.marathon.api.v2
+package mesosphere.marathon
+package api.v2
 
 import java.util
 import javax.inject.Inject
@@ -10,24 +11,23 @@ import com.codahale.metrics.annotation.Timed
 import mesosphere.marathon.api.v2.json.Formats._
 import mesosphere.marathon.api.{ EndpointsHelper, MarathonMediaType, TaskKiller, _ }
 import mesosphere.marathon.core.appinfo.EnrichedTask
+import mesosphere.marathon.core.condition.Condition
 import mesosphere.marathon.core.group.GroupManager
 import mesosphere.marathon.core.health.HealthCheckManager
+import mesosphere.marathon.core.instance.Instance
 import mesosphere.marathon.core.task.Task
-import mesosphere.marathon.core.task.state.MarathonTaskStatus
-import mesosphere.marathon.core.task.tracker.TaskTracker
+import mesosphere.marathon.core.task.tracker.InstanceTracker
 import mesosphere.marathon.plugin.auth.{ Authenticator, Authorizer, UpdateRunSpec, ViewRunSpec }
 import mesosphere.marathon.state.PathId
-import mesosphere.marathon.{ BadRequestException, MarathonConf }
+import mesosphere.marathon.stream._
 import org.slf4j.LoggerFactory
 import play.api.libs.json.Json
 
-import scala.collection.IterableView
-import scala.collection.JavaConverters._
 import scala.concurrent.{ ExecutionContext, Future }
 
 @Path("v2/tasks")
 class TasksResource @Inject() (
-    taskTracker: TaskTracker,
+    instanceTracker: InstanceTracker,
     taskKiller: TaskKiller,
     val config: MarathonConf,
     groupManager: GroupManager,
@@ -46,15 +46,15 @@ class TasksResource @Inject() (
     @QueryParam("status[]") statuses: util.List[String],
     @Context req: HttpServletRequest): Response = authenticated(req) { implicit identity =>
     Option(status).map(statuses.add)
-    val statusSet = statuses.asScala.flatMap(toTaskState).toSet
+    val conditionSet: Set[Condition] = statuses.flatMap(toTaskState)(collection.breakOut)
 
-    val taskList = taskTracker.tasksByAppSync
+    val taskList = instanceTracker.instancesBySpecSync
 
-    val tasks = taskList.appTasksMap.values.view.flatMap { appTasks =>
-      appTasks.tasks.view.map(t => appTasks.appId -> t)
+    val tasks = taskList.instancesMap.values.view.flatMap { appTasks =>
+      appTasks.instances.flatMap(_.tasks).map(t => appTasks.specId -> t)
     }
 
-    val appIds = taskList.allAppIdsWithTasks
+    val appIds = taskList.allSpecIdsWithInstances
 
     val appIdsToApps = appIds.map(appId => appId -> result(groupManager.app(appId))).toMap
 
@@ -66,19 +66,20 @@ class TasksResource @Inject() (
       result(healthCheckManager.statuses(appId))
     }.toMap
 
-    val enrichedTasks: IterableView[EnrichedTask, Iterable[_]] = for {
-      (appId, task) <- tasks
-      app <- appIdsToApps(appId)
-      if isAuthorized(ViewRunSpec, app)
-      if statusSet.isEmpty || statusSet(task.status.taskStatus)
-    } yield {
-      EnrichedTask(
-        appId,
-        task,
-        health.getOrElse(task.taskId, Nil),
-        appToPorts.getOrElse(appId, Nil)
-      )
-    }
+    val enrichedTasks = tasks.flatMap {
+      case (appId, task) =>
+        val app = appIdsToApps(appId)
+        if (isAuthorized(ViewRunSpec, app) && (conditionSet.isEmpty || conditionSet(task.status.condition))) {
+          Some(EnrichedTask(
+            appId,
+            task,
+            health.getOrElse(task.taskId, Nil),
+            appToPorts.getOrElse(appId, Nil)
+          ))
+        } else {
+          None
+        }
+    }.force
 
     ok(jsonObjString(
       "tasks" -> enrichedTasks
@@ -90,7 +91,7 @@ class TasksResource @Inject() (
   @Timed
   def indexTxt(@Context req: HttpServletRequest): Response = authenticated(req) { implicit identity =>
     ok(EndpointsHelper.appsToEndpointString(
-      taskTracker,
+      instanceTracker,
       result(groupManager.rootGroup()).transitiveApps.toSeq.filter(app => isAuthorized(ViewRunSpec, app)),
       "\t"
     ))
@@ -116,34 +117,34 @@ class TasksResource @Inject() (
       catch { case e: MatchError => throw new BadRequestException(s"Invalid task id '$id'.") }
     }.toMap
 
-    def scaleAppWithKill(toKill: Map[PathId, Iterable[Task]]): Response = {
+    def scaleAppWithKill(toKill: Map[PathId, Iterable[Instance]]): Response = {
       deploymentResult(result(taskKiller.killAndScale(toKill, force)))
     }
 
-    def killTasks(toKill: Map[PathId, Iterable[Task]]): Response = {
+    def killTasks(toKill: Map[PathId, Iterable[Instance]]): Response = {
       val affectedApps = tasksToAppId.values.flatMap(appId => result(groupManager.app(appId))).toSeq
       // FIXME (gkleiman): taskKiller.kill a few lines below also checks authorization, but we need to check ALL before
       // starting to kill tasks
       affectedApps.foreach(checkAuthorization(UpdateRunSpec, _))
 
       val killed = result(Future.sequence(toKill.map {
-        case (appId, tasks) => taskKiller.kill(appId, _ => tasks, wipe)
+        case (appId, instances) => taskKiller.kill(appId, _ => instances, wipe)
       })).flatten
-      ok(jsonObjString("tasks" -> killed.map(task => EnrichedTask(task.taskId.runSpecId, task, Seq.empty))))
+      ok(jsonObjString("tasks" -> killed.flatMap(_.tasks).map(task => EnrichedTask(task.runSpecId, task, Seq.empty))))
     }
 
     val tasksByAppId = tasksToAppId
-      .flatMap { case (taskId, appId) => taskTracker.tasksByAppSync.task(Task.Id(taskId)) }
-      .groupBy { task => task.taskId.runSpecId }
-      .map{ case (appId, tasks) => appId -> tasks }
+      .flatMap { case (taskId, appId) => instanceTracker.instancesBySpecSync.instance(Task.Id(taskId).instanceId) }
+      .groupBy { instance => instance.instanceId.runSpecId }
+      .map{ case (appId, instances) => appId -> instances }
 
     if (scale) scaleAppWithKill(tasksByAppId)
     else killTasks(tasksByAppId)
   }
 
-  private def toTaskState(state: String): Option[MarathonTaskStatus] = state.toLowerCase match {
-    case "running" => Some(MarathonTaskStatus.Running)
-    case "staging" => Some(MarathonTaskStatus.Staging)
+  private def toTaskState(state: String): Option[Condition] = state.toLowerCase match {
+    case "running" => Some(Condition.Running)
+    case "staging" => Some(Condition.Staging)
     case _ => None
   }
 }

@@ -3,11 +3,12 @@ package mesosphere.marathon
 import javax.inject.Inject
 
 import akka.event.EventStream
-import mesosphere.marathon.core.base.CurrentRuntime
+import mesosphere.marathon.core.base._
 import mesosphere.marathon.core.event.{ SchedulerRegisteredEvent, _ }
 import mesosphere.marathon.core.launcher.OfferProcessor
 import mesosphere.marathon.core.task.update.TaskStatusUpdateProcessor
 import mesosphere.marathon.storage.repository.FrameworkIdRepository
+import mesosphere.marathon.stream._
 import mesosphere.util.state.{ FrameworkId, MesosLeaderInfo }
 import org.apache.mesos.Protos._
 import org.apache.mesos.{ Scheduler, SchedulerDriver }
@@ -47,8 +48,7 @@ class MarathonScheduler @Inject() (
   }
 
   override def resourceOffers(driver: SchedulerDriver, offers: java.util.List[Offer]): Unit = {
-    import scala.collection.JavaConverters._
-    offers.asScala.foreach { offer =>
+    offers.foreach { offer =>
       val processFuture = offerProcessor.processOffer(offer)
       processFuture.onComplete {
         case scala.util.Success(_) => log.debug(s"Finished processing offer '${offer.getId.getValue}'")
@@ -137,6 +137,6 @@ class MarathonScheduler @Inject() (
     if (removeFrameworkId) Await.ready(frameworkIdRepository.delete(), config.zkTimeoutDuration)
 
     // Asynchronously call asyncExit to avoid deadlock due to the JVM shutdown hooks
-    CurrentRuntime.asyncExit()
+    Runtime.getRuntime.asyncExit()
   }
 }

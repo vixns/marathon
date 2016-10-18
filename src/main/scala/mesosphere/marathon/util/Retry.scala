@@ -5,8 +5,8 @@ import com.typesafe.config.Config
 
 import scala.concurrent.duration.{ FiniteDuration, _ }
 import scala.concurrent.{ ExecutionContext, Future, Promise, blocking => blockingCall }
+import scala.util.Random
 import scala.util.control.NonFatal
-import scala.util.{ Failure, Random, Success }
 
 case class RetryConfig(
   maxAttempts: Int = Retry.DefaultMaxAttempts,
@@ -88,7 +88,7 @@ object Retry {
   }
 
   /**
-    * Retry a non-blocking call
+    * Retry a blocking call
     * @param maxAttempts The maximum number of attempts before failing
     * @param minDelay The minimum delay between invocations
     * @param maxDelay The maximum delay between invocations

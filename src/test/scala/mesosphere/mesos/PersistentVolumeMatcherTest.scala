@@ -1,14 +1,15 @@
 package mesosphere.mesos
 
+import mesosphere.marathon.core.instance.TestTaskBuilder
 import mesosphere.marathon.core.task.Task
 import mesosphere.marathon.state.{ AppDefinition, PathId }
+import mesosphere.marathon.stream._
 import mesosphere.marathon.test.{ MarathonSpec, MarathonTestHelper, Mockito }
 import org.scalatest.{ GivenWhenThen, Matchers }
 
 import scala.collection.immutable.Seq
 
 class PersistentVolumeMatcherTest extends MarathonSpec with GivenWhenThen with Mockito with Matchers {
-  import scala.collection.JavaConverters._
 
   test("Missing volumes result in NO match") {
     val f = new Fixture
@@ -62,8 +63,8 @@ class PersistentVolumeMatcherTest extends MarathonSpec with GivenWhenThen with M
     val offer =
       f.offerWithVolumes(unknownTaskId, localVolumeId1)
         .toBuilder
-        .addAllResources(MarathonTestHelper.persistentVolumeResources(tasks.head.taskId, localVolumeId2).asJava)
-        .addAllResources(MarathonTestHelper.persistentVolumeResources(tasks(1).taskId, localVolumeId3).asJava)
+        .addAllResources(MarathonTestHelper.persistentVolumeResources(tasks.head.taskId, localVolumeId2))
+        .addAllResources(MarathonTestHelper.persistentVolumeResources(tasks(1).taskId, localVolumeId3))
         .build()
 
     When("We ask for a volume match")
@@ -94,11 +95,10 @@ class PersistentVolumeMatcherTest extends MarathonSpec with GivenWhenThen with M
   }
 
   class Fixture {
-    def makeTask(appId: PathId) = MarathonTestHelper.mininimalTask(appId)
-    def makeTask(appId: PathId, reservation: Task.Reservation) = MarathonTestHelper.minimalReservedTask(appId, reservation)
+    def makeTask(appId: PathId, reservation: Task.Reservation) = TestTaskBuilder.Helper.minimalReservedTask(appId, reservation)
     def offerWithVolumes(taskId: Task.Id, localVolumeIds: Task.LocalVolumeId*) =
       MarathonTestHelper.offerWithVolumesOnly(taskId, localVolumeIds: _*)
     def appWithPersistentVolume(): AppDefinition = MarathonTestHelper.appWithPersistentVolume()
-    val taskReservationStateNew = MarathonTestHelper.taskReservationStateNew
+    val taskReservationStateNew = TestTaskBuilder.Helper.taskReservationStateNew
   }
 }

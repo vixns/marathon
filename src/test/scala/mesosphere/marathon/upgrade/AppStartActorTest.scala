@@ -1,13 +1,14 @@
 package mesosphere.marathon.upgrade
 
 import akka.testkit.{ TestActorRef, TestProbe }
-import mesosphere.marathon.core.event.{ DeploymentStatus, HealthStatusChanged, MesosStatusUpdateEvent }
+import mesosphere.marathon.core.condition.Condition
+import mesosphere.marathon.core.event.{ DeploymentStatus, InstanceChanged, InstanceHealthChanged }
 import mesosphere.marathon.core.health.MarathonHttpHealthCheck
+import mesosphere.marathon.core.instance.Instance
 import mesosphere.marathon.core.launchqueue.LaunchQueue
 import mesosphere.marathon.core.leadership.AlwaysElectedLeadershipModule
 import mesosphere.marathon.core.readiness.ReadinessCheckExecutor
-import mesosphere.marathon.core.task.Task
-import mesosphere.marathon.core.task.tracker.TaskTracker
+import mesosphere.marathon.core.task.tracker.InstanceTracker
 import mesosphere.marathon.state.{ AppDefinition, PathId }
 import mesosphere.marathon.test.{ MarathonActorSupport, MarathonSpec, MarathonTestHelper, Mockito }
 import mesosphere.marathon.{ AppStartCanceledException, SchedulerActions }
@@ -26,87 +27,76 @@ class AppStartActorTest
 
   test("Without Health Checks") {
     val f = new Fixture
-    val app = AppDefinition(id = PathId("app"), instances = 10)
+    val app = AppDefinition(id = PathId("/app"), instances = 10)
     val promise = Promise[Unit]()
     val ref = f.startActor(app, scaleTo = 2, promise)
     watch(ref)
 
-    system.eventStream.publish(
-      MesosStatusUpdateEvent(
-        slaveId = "", taskId = Task.Id("task_a"),
-        taskStatus = "TASK_RUNNING", message = "", appId = app
-        .id, host = "", ipAddresses = None, ports = Nil, version = app.version.toString
-      )
-    )
-    system.eventStream.publish(
-      MesosStatusUpdateEvent(
-        slaveId = "", taskId = Task.Id("task_b"), taskStatus = "TASK_RUNNING", message = "", appId = app.id, host = "",
-        ipAddresses = None, ports = Nil, version = app.version.toString
-      )
-    )
+    system.eventStream.publish(f.instanceChanged(app, Condition.Running)) // linter:ignore:IdenticalStatements
+    system.eventStream.publish(f.instanceChanged(app, Condition.Running))
 
     Await.result(promise.future, 5.seconds)
 
-    verify(f.scheduler).startApp(app.copy(instances = 2))
+    verify(f.scheduler).startRunSpec(app.copy(instances = 2))
     expectTerminated(ref)
   }
 
   test("With Health Checks") {
     val f = new Fixture
     val app = AppDefinition(
-      id = PathId("app"),
+      id = PathId("/app"),
       instances = 10,
       healthChecks = Set(MarathonHttpHealthCheck(portIndex = Some(0))))
     val promise = Promise[Unit]()
     val ref = f.startActor(app, scaleTo = 2, promise)
     watch(ref)
 
-    system.eventStream.publish(HealthStatusChanged(app.id, Task.Id("task_a"), app.version, alive = true))
-    system.eventStream.publish(HealthStatusChanged(app.id, Task.Id("task_b"), app.version, alive = true))
+    system.eventStream.publish(f.healthChanged(app, healthy = true)) // linter:ignore:IdenticalStatements
+    system.eventStream.publish(f.healthChanged(app, healthy = true))
 
     Await.result(promise.future, 5.seconds)
 
-    verify(f.scheduler).startApp(app.copy(instances = 2))
+    verify(f.scheduler).startRunSpec(app.copy(instances = 2))
     expectTerminated(ref)
   }
 
   test("Failed") {
     val f = new Fixture
-    f.scheduler.stopApp(any).asInstanceOf[Future[Unit]] returns Future.successful(())
+    f.scheduler.stopRunSpec(any).asInstanceOf[Future[Unit]] returns Future.successful(())
 
-    val app = AppDefinition(id = PathId("app"), instances = 10)
+    val app = AppDefinition(id = PathId("/app"), instances = 10)
     val promise = Promise[Unit]()
     val ref = f.startActor(app, scaleTo = 2, promise)
     watch(ref)
 
-    ref.stop()
+    ref ! DeploymentActor.Shutdown
 
     intercept[AppStartCanceledException] {
       Await.result(promise.future, 5.seconds)
     }
 
-    verify(f.scheduler).startApp(app.copy(instances = 2))
-    verify(f.scheduler).stopApp(app)
+    verify(f.scheduler).startRunSpec(app.copy(instances = 2))
+    verify(f.scheduler).stopRunSpec(app)
     expectTerminated(ref)
   }
 
   test("No tasks to start without health checks") {
     val f = new Fixture
-    val app = AppDefinition(id = PathId("app"), instances = 10)
+    val app = AppDefinition(id = PathId("/app"), instances = 10)
     val promise = Promise[Unit]()
     val ref = f.startActor(app, scaleTo = 0, promise)
     watch(ref)
 
     Await.result(promise.future, 5.seconds)
 
-    verify(f.scheduler).startApp(app.copy(instances = 0))
+    verify(f.scheduler).startRunSpec(app.copy(instances = 0))
     expectTerminated(ref)
   }
 
   test("No tasks to start with health checks") {
     val f = new Fixture
     val app = AppDefinition(
-      id = PathId("app"),
+      id = PathId("/app"),
       instances = 10,
       healthChecks = Set(MarathonHttpHealthCheck(portIndex = Some(0))))
     val promise = Promise[Unit]()
@@ -115,7 +105,7 @@ class AppStartActorTest
 
     Await.result(promise.future, 5.seconds)
 
-    verify(f.scheduler).startApp(app.copy(instances = 0))
+    verify(f.scheduler).startRunSpec(app.copy(instances = 0))
     expectTerminated(ref)
   }
 
@@ -124,10 +114,21 @@ class AppStartActorTest
     val driver: SchedulerDriver = mock[SchedulerDriver]
     val scheduler: SchedulerActions = mock[SchedulerActions]
     val launchQueue: LaunchQueue = mock[LaunchQueue]
-    val taskTracker: TaskTracker = MarathonTestHelper.createTaskTracker(AlwaysElectedLeadershipModule.forActorSystem(system))
+    val taskTracker: InstanceTracker = MarathonTestHelper.createTaskTracker(AlwaysElectedLeadershipModule.forActorSystem(system))
     val deploymentManager: TestProbe = TestProbe()
     val deploymentStatus: DeploymentStatus = mock[DeploymentStatus]
     val readinessCheckExecutor: ReadinessCheckExecutor = mock[ReadinessCheckExecutor]
+
+    def instanceChanged(app: AppDefinition, condition: Condition): InstanceChanged = {
+      val instanceId = Instance.Id.forRunSpec(app.id)
+      val instance: Instance = mock[Instance]
+      instance.instanceId returns instanceId
+      InstanceChanged(instanceId, app.version, app.id, condition, instance)
+    }
+
+    def healthChanged(app: AppDefinition, healthy: Boolean): InstanceHealthChanged = {
+      InstanceHealthChanged(Instance.Id.forRunSpec(app.id), app.version, app.id, healthy = Some(healthy))
+    }
 
     def startActor(app: AppDefinition, scaleTo: Int, promise: Promise[Unit]): TestActorRef[AppStartActor] =
       TestActorRef(AppStartActor.props(deploymentManager.ref, deploymentStatus, driver, scheduler,

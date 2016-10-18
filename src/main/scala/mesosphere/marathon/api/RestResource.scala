@@ -4,15 +4,14 @@ import java.net.URI
 import javax.ws.rs.core.Response
 import javax.ws.rs.core.Response.{ ResponseBuilder, Status }
 
+import com.wix.accord._
 import mesosphere.marathon.MarathonConf
+import mesosphere.marathon.api.v2.Validation._
 import mesosphere.marathon.api.v2.json.Formats._
 import mesosphere.marathon.state.{ PathId, Timestamp }
 import mesosphere.marathon.upgrade.DeploymentPlan
 import play.api.libs.json.Json.JsValueWrapper
-import play.api.libs.json.{ Writes, Json }
-
-import com.wix.accord._
-import mesosphere.marathon.api.v2.Validation._
+import play.api.libs.json.{ Json, Writes }
 
 import scala.concurrent.{ Await, Awaitable }
 
@@ -28,6 +27,10 @@ trait RestResource {
 
   protected def unknownApp(id: PathId, version: Option[Timestamp] = None): Response = {
     notFound(s"App '$id' does not exist" + version.fold("")(v => s" in version $v"))
+  }
+
+  protected def unknownPod(id: PathId, version: Option[Timestamp] = None): Response = {
+    notFound(s"Pod '$id' does not exist" + version.fold("")(v => s" in version $v"))
   }
 
   protected def notFound(message: String): Response = {
