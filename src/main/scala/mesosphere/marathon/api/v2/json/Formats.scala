@@ -122,14 +122,14 @@ trait Formats
       "id" -> task.taskId,
       "slaveId" -> task.agentInfo.agentId,
       "host" -> task.agentInfo.host,
-      "state" -> task.mesosStatus.fold(mesos.TaskState.TASK_STAGING)(_.getState)
+      "state" -> task.status.condition.toMesosStateName
     )
 
     val launched = task.launched.map { launched =>
-      launched.ipAddresses.foldLeft(
+      task.status.ipAddresses.foldLeft(
         base ++ Json.obj (
-          "startedAt" -> launched.status.startedAt,
-          "stagedAt" -> launched.status.stagedAt,
+          "startedAt" -> task.status.startedAt,
+          "stagedAt" -> task.status.stagedAt,
           "ports" -> launched.hostPorts,
           "version" -> task.runSpecVersion
         )
@@ -1226,16 +1226,16 @@ trait AppAndGroupFormats {
   @SuppressWarnings(Array("PartialFunctionInsteadOfMatch"))
   implicit lazy val TaskStatsByVersionWrites: Writes[TaskStatsByVersion] =
     Writes { byVersion =>
-      val maybeJsons = Seq[(String, Option[TaskStats])](
+      val maybeJsons = Map[String, Option[TaskStats]](
         "startedAfterLastScaling" -> byVersion.maybeStartedAfterLastScaling,
         "withLatestConfig" -> byVersion.maybeWithLatestConfig,
         "withOutdatedConfig" -> byVersion.maybeWithOutdatedConfig,
         "totalSummary" -> byVersion.maybeTotalSummary
       )
       Json.toJson(
-        maybeJsons.iterator.flatMap {
-        case (k, v) => v.map(k -> TaskStatsWrites.writes(_))
-      }.toMap
+        maybeJsons.flatMap {
+          case (k, v) => v.map(k -> TaskStatsWrites.writes(_))
+        }
       )
     }
 

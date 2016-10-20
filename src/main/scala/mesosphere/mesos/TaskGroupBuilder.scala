@@ -22,7 +22,7 @@ object TaskGroupBuilder {
   // let's (for now) set these values to reflect that.
   val LinuxAmd64 = mesos.Labels.newBuilder
     .addAllLabels(
-      Iterable(
+      Seq(
         mesos.Label.newBuilder.setKey("os").setValue("linux").build,
         mesos.Label.newBuilder.setKey("arch").setValue("amd64").build
       ))
@@ -137,9 +137,11 @@ object TaskGroupBuilder {
 
     val endpointVars = endpointEnvVars(podDefinition, hostPorts, config)
 
+    val taskId = Task.Id.forInstanceId(instanceId, Some(container))
+
     val builder = mesos.TaskInfo.newBuilder
       .setName(container.name)
-      .setTaskId(mesos.TaskID.newBuilder.setValue(Task.Id.forInstanceId(instanceId, Some(container)).idString))
+      .setTaskId(mesos.TaskID.newBuilder.setValue(taskId.idString))
       .setSlaveId(offer.getSlaveId)
 
     builder.addResources(scalarResource("cpus", container.resources.cpus))
@@ -156,6 +158,7 @@ object TaskGroupBuilder {
     val commandInfo = computeCommandInfo(
       podDefinition,
       instanceId,
+      taskId,
       container,
       offer.getHostname,
       endpointVars)
@@ -242,6 +245,7 @@ object TaskGroupBuilder {
   private[this] def computeCommandInfo(
     podDefinition: PodDefinition,
     instanceId: Instance.Id,
+    taskId: Task.Id,
     container: MesosContainer,
     host: String,
     portsEnvVars: Map[String, String]): mesos.CommandInfo.Builder = {
@@ -284,7 +288,7 @@ object TaskGroupBuilder {
 
     val hostEnvVar = Map("HOST" -> host)
 
-    val taskContextEnvVars = taskContextEnv(container, podDefinition.version, instanceId)
+    val taskContextEnvVars = taskContextEnv(container, podDefinition.version, instanceId, taskId)
 
     val labels = podDefinition.labels ++ container.labels
 
@@ -385,7 +389,7 @@ object TaskGroupBuilder {
     builder.setTimeoutSeconds(healthCheck.timeoutSeconds.toDouble)
 
     lazy val hostPortsByEndpoint: Map[String, Option[Int]] = {
-      podDefinition.containers.flatMap(_.endpoints.map(_.name)).zip(hostPorts).toMap.withDefaultValue(None)
+      podDefinition.containers.view.flatMap(_.endpoints.map(_.name)).zip(hostPorts).toMap.withDefaultValue(None)
     }
 
     assume(
@@ -452,8 +456,8 @@ object TaskGroupBuilder {
     def escape(name: String): String = name.replaceAll("[^A-Z0-9_]+", "_").toUpperCase
 
     val hostNetwork = pod.networks.contains(HostNetwork)
-    val hostPortByEndpoint = pod.containers.flatMap(_.endpoints).zip(hostPorts).toMap.withDefaultValue(None)
-    pod.containers.flatMap(_.endpoints).flatMap{ endpoint =>
+    val hostPortByEndpoint = pod.containers.view.flatMap(_.endpoints).zip(hostPorts).toMap.withDefaultValue(None)
+    pod.containers.view.flatMap(_.endpoints).flatMap{ endpoint =>
       val mayBePort = if (hostNetwork) hostPortByEndpoint(endpoint) else endpoint.containerPort
       val envName = escape(endpoint.name.toUpperCase)
       Seq(
@@ -467,9 +471,11 @@ object TaskGroupBuilder {
   private[this] def taskContextEnv(
     container: MesosContainer,
     version: Timestamp,
-    instanceId: Instance.Id): Map[String, String] = {
+    instanceId: Instance.Id,
+    taskId: Task.Id): Map[String, String] = {
     Map(
-      "MESOS_TASK_ID" -> Some(instanceId.idString),
+      "MESOS_TASK_ID" -> Some(taskId.idString),
+      "MESOS_EXECUTOR_ID" -> Some(instanceId.executorIdString),
       "MARATHON_APP_ID" -> Some(instanceId.runSpecId.toString),
       "MARATHON_APP_VERSION" -> Some(version.toString),
       "MARATHON_CONTAINER_ID" -> Some(container.name),
