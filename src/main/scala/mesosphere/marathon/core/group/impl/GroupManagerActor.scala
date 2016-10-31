@@ -150,7 +150,7 @@ private[impl] class GroupManagerActor(
         plan = DeploymentPlan(from, to, resolve, version, toKill)
         _ = validateOrThrow(plan)(DeploymentPlan.deploymentPlanValidator(config))
         _ = log.info(s"Computed new deployment plan:\n$plan")
-        _ <- groupRepo.storeRootVersion(plan.target, plan.createdOrUpdatedApps)
+        _ <- groupRepo.storeRootVersion(plan.target, plan.createdOrUpdatedApps, plan.createdOrUpdatedPods)
         _ <- scheduler.deploy(plan, force)
         _ <- groupRepo.storeRoot(plan.target, plan.createdOrUpdatedApps,
           plan.deletedApps, plan.createdOrUpdatedPods, plan.deletedPods)
@@ -247,15 +247,14 @@ private[impl] class GroupManagerActor(
         if (port == 0) nextFreeServicePort else port
       }
 
+      // TODO(portMappings) this should apply for multiple container types
       // defined only if there are port mappings
       val newContainer = app.container.flatMap { container =>
-        container.docker().flatMap { docker =>
-          docker.portMappings.map { portMappings =>
-            val newMappings = portMappings.zip(servicePorts).map {
-              case (portMapping, servicePort) => portMapping.copy(servicePort = servicePort)
-            }
-            docker.copy(portMappings = Some(newMappings))
+        container.docker().map { docker =>
+          val newMappings = docker.portMappings.zip(servicePorts).map {
+            case (portMapping, servicePort) => portMapping.copy(servicePort = servicePort)
           }
+          docker.copy(portMappings = newMappings)
         }
       }
 

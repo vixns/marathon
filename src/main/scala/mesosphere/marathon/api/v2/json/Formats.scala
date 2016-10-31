@@ -122,7 +122,7 @@ trait Formats
       "id" -> task.taskId,
       "slaveId" -> task.agentInfo.agentId,
       "host" -> task.agentInfo.host,
-      "state" -> task.status.condition.toMesosStateName
+      "state" -> task.status.condition.toReadableName
     )
 
     val launched = task.launched.map { launched =>
@@ -223,14 +223,14 @@ trait ContainerFormats {
   implicit lazy val DockerNetworkFormat: Format[DockerInfo.Network] =
     enumFormat(DockerInfo.Network.valueOf, str => s"$str is not a valid network type")
 
-  implicit lazy val PortMappingFormat: Format[Container.Docker.PortMapping] = (
+  implicit lazy val PortMappingFormat: Format[Container.PortMapping] = (
     (__ \ "containerPort").formatNullable[Int].withDefault(AppDefinition.RandomPortValue) ~
     (__ \ "hostPort").formatNullable[Int] ~
     (__ \ "servicePort").formatNullable[Int].withDefault(AppDefinition.RandomPortValue) ~
     (__ \ "protocol").formatNullable[String].withDefault("tcp") ~
     (__ \ "name").formatNullable[String] ~
     (__ \ "labels").formatNullable[Map[String, String]].withDefault(Map.empty[String, String])
-  )(Container.Docker.PortMapping(_, _, _, _, _, _), unlift(Container.Docker.PortMapping.unapply))
+  )(Container.PortMapping(_, _, _, _, _, _), unlift(Container.PortMapping.unapply))
 
   implicit lazy val CredentialFormat: Format[Container.Credential] = (
     (__ \ "principal").format[String] ~
@@ -291,7 +291,7 @@ trait ContainerFormats {
     case class DockerContainerParameters(
       image: String,
       network: Option[ContainerInfo.DockerInfo.Network],
-      portMappings: Option[Seq[Container.Docker.PortMapping]],
+      portMappings: Seq[Container.PortMapping],
       privileged: Boolean,
       parameters: Seq[Parameter],
       credential: Option[Container.Credential],
@@ -300,7 +300,7 @@ trait ContainerFormats {
     implicit lazy val DockerContainerParametersFormat: Format[DockerContainerParameters] = (
       (__ \ "image").format[String] ~
       (__ \ "network").formatNullable[DockerInfo.Network] ~
-      (__ \ "portMappings").formatNullable[Seq[Container.Docker.PortMapping]] ~
+      (__ \ "portMappings").formatNullable[Seq[Container.PortMapping]].withDefault(Nil) ~
       (__ \ "privileged").formatNullable[Boolean].withDefault(false) ~
       (__ \ "parameters").formatNullable[Seq[Parameter]].withDefault(Seq.empty) ~
       (__ \ "credential").formatNullable[Container.Credential] ~
@@ -1190,7 +1190,9 @@ trait AppAndGroupFormats {
           "ports" -> runSpec.servicePorts,
           "portDefinitions" -> {
             if (runSpec.servicePorts.nonEmpty) {
-              runSpec.portDefinitions.zip(runSpec.servicePorts).map {
+              // zip with defaults here to avoid the possibility of generating invalid JSON,
+              // for example where ports=[0] but portDefinition=[]
+              runSpec.portDefinitions.zipAll(runSpec.servicePorts, PortDefinition(0), 0).map {
                 case (portDefinition, servicePort) => portDefinition.copy(port = servicePort)
               }
             } else {

@@ -6,8 +6,7 @@ import mesosphere.marathon.api.serialization.PortDefinitionSerializer
 import mesosphere.marathon.core.instance.{ Instance, TestInstanceBuilder }
 import mesosphere.marathon.core.task.Task
 import mesosphere.marathon.raml.Resources
-import mesosphere.marathon.state.Container.Docker
-import mesosphere.marathon.state.Container.Docker.PortMapping
+import mesosphere.marathon.state.Container.{ Docker, PortMapping }
 import mesosphere.marathon.state.PathId._
 import mesosphere.marathon.state.VersionInfo.OnlyVersion
 import mesosphere.marathon.state.{ AppDefinition, Container, PathId, Timestamp, _ }
@@ -206,7 +205,7 @@ class TaskBuilderTest extends MarathonSpec with Matchers {
         executor = "//cmd",
         container = Some(Docker(
           network = Some(DockerInfo.Network.BRIDGE),
-          portMappings = Some(Seq(
+          portMappings = Seq(
             PortMapping(
               containerPort = 8080,
               hostPort = Some(0),
@@ -223,7 +222,7 @@ class TaskBuilderTest extends MarathonSpec with Matchers {
               name = Some("admin"),
               labels = Map("VIP" -> "127.0.0.1:8081")
             )
-          ))
+          )
         ))
       ))
 
@@ -260,7 +259,7 @@ class TaskBuilderTest extends MarathonSpec with Matchers {
         executor = "//cmd",
         container = Some(Docker(
           network = Some(DockerInfo.Network.BRIDGE),
-          portMappings = Some(Seq(
+          portMappings = Seq(
             PortMapping(
               containerPort = 8080,
               hostPort = Some(0),
@@ -277,7 +276,7 @@ class TaskBuilderTest extends MarathonSpec with Matchers {
               name = Some("admin"),
               labels = Map("VIP" -> "127.0.0.1:8081")
             )
-          ))
+          )
         ))
       ))
 
@@ -1093,9 +1092,9 @@ class TaskBuilderTest extends MarathonSpec with Matchers {
       executor = "//cmd",
       container = Some(Docker(
         network = Some(DockerInfo.Network.BRIDGE),
-        portMappings = Some(Seq(
+        portMappings = Seq(
           PortMapping(containerPort = 0, hostPort = Some(0), servicePort = 9000, protocol = "tcp")
-        ))
+        )
       ))
     )
     )
@@ -1121,9 +1120,9 @@ class TaskBuilderTest extends MarathonSpec with Matchers {
       executor = "//cmd",
       container = Some(Docker(
         network = Some(DockerInfo.Network.USER),
-        portMappings = Some(Seq(
+        portMappings = Seq(
           PortMapping()
-        ))
+        )
       )),
       portDefinitions = Seq.empty,
       ipAddress = Some(IpAddress(networkName = Some("vnet")))
@@ -1147,21 +1146,19 @@ class TaskBuilderTest extends MarathonSpec with Matchers {
       .addResources(RangesResource(Resource.PORTS, Seq(protos.Range(33000, 34000)), "marathon"))
       .build
 
-    val task: Option[(MesosProtos.TaskInfo, _)] = buildIfMatches(
-      offer, AppDefinition(
+    val task: Option[(MesosProtos.TaskInfo, _)] = buildIfMatches(offer, AppDefinition(
       id = "/testApp".toPath,
       resources = Resources(cpus = 1.0, mem = 64.0, disk = 1.0),
       executor = "//cmd",
       container = Some(Docker(
         network = Some(DockerInfo.Network.USER),
-        portMappings = Some(Seq(
+        portMappings = Seq(
           PortMapping(containerPort = 0, hostPort = Some(31000), servicePort = 9000, protocol = "tcp"),
           PortMapping(containerPort = 0, hostPort = None, servicePort = 9001, protocol = "tcp"),
           PortMapping(containerPort = 0, hostPort = Some(31005), servicePort = 9002, protocol = "tcp")
-        ))
+        )
       ))
-    )
-    )
+    ))
     assert(task.isDefined, "expected task to match offer")
     val (taskInfo: TaskInfo, _) = task.get
     assert(taskInfo.getContainer.getDocker.getPortMappingsList.size == 2, "expected 2 port mappings (ignoring hostPort == None)")
@@ -1535,10 +1532,10 @@ class TaskBuilderTest extends MarathonSpec with Matchers {
           id = runSpecId,
           container = Some(Docker(
             network = Some(DockerInfo.Network.BRIDGE),
-            portMappings = Some(Seq(
+            portMappings = Seq(
               PortMapping(containerPort = 8080, hostPort = Some(0), servicePort = 9000, protocol = "tcp", name = Some("http")),
               PortMapping(containerPort = 8081, hostPort = Some(0), servicePort = 9000, protocol = "tcp", name = Some("jabber"))
-            ))
+            )
           ))
         ),
         taskId = Some(Task.Id("task-123")),
@@ -1563,10 +1560,10 @@ class TaskBuilderTest extends MarathonSpec with Matchers {
           portDefinitions = PortDefinitions(22, 23),
           container = Some(Docker(
             network = Some(DockerInfo.Network.BRIDGE),
-            portMappings = Some(Seq(
+            portMappings = Seq(
               PortMapping(containerPort = 8080, hostPort = Some(0), servicePort = 9000, protocol = "tcp"),
               PortMapping(containerPort = 8081, hostPort = Some(0), servicePort = 9000, protocol = "tcp")
-            ))
+            )
           ))
         ),
         taskId = Some(Task.Id("task-123")),
@@ -1655,15 +1652,15 @@ class TaskBuilderTest extends MarathonSpec with Matchers {
         container = Some(Docker(
           image = "jdef/foo",
           network = Some(MesosProtos.ContainerInfo.DockerInfo.Network.USER),
-          portMappings = Some(Seq(
+          portMappings = Seq(
             // order is important here since it impacts the specific assertions that follow
-            Container.Docker.PortMapping(containerPort = 0, hostPort = None),
-            Container.Docker.PortMapping(containerPort = 100, hostPort = Some(0)),
-            Container.Docker.PortMapping(containerPort = 200, hostPort = Some(25002)),
-            Container.Docker.PortMapping(containerPort = 0, hostPort = Some(25001)),
-            Container.Docker.PortMapping(containerPort = 400, hostPort = None),
-            Container.Docker.PortMapping(containerPort = 0, hostPort = Some(0))
-          ))
+            Container.PortMapping(containerPort = 0, hostPort = None),
+            Container.PortMapping(containerPort = 100, hostPort = Some(0)),
+            Container.PortMapping(containerPort = 200, hostPort = Some(25002)),
+            Container.PortMapping(containerPort = 0, hostPort = Some(25001)),
+            Container.PortMapping(containerPort = 400, hostPort = None),
+            Container.PortMapping(containerPort = 0, hostPort = Some(0))
+          )
         )),
         ipAddress = Some(IpAddress(networkName = Some("vnet"))),
         portDefinitions = Nil
