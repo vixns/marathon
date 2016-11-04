@@ -36,6 +36,9 @@ case class TestInstanceBuilder(
   def addTaskUnreachable(since: Timestamp = now, containerName: Option[String] = None): TestInstanceBuilder =
     addTaskWithBuilder().taskUnreachable(since, containerName).build()
 
+  def addTaskUnreachableInactive(since: Timestamp = now, containerName: Option[String] = None): TestInstanceBuilder =
+    addTaskWithBuilder().taskUnreachableInactive(since, containerName).build()
+
   def addTaskError(since: Timestamp = now, containerName: Option[String] = None): TestInstanceBuilder =
     addTaskWithBuilder().taskError(since, containerName).build()
 
@@ -102,7 +105,7 @@ object TestInstanceBuilder {
   def emptyInstance(now: Timestamp = Timestamp.now(), version: Timestamp = Timestamp.zero, instanceId: Instance.Id): Instance = Instance(
     instanceId = instanceId,
     agentInfo = TestInstanceBuilder.defaultAgentInfo,
-    state = InstanceState(Condition.Created, now, healthy = None),
+    state = InstanceState(Condition.Created, now, None, healthy = None),
     tasksMap = Map.empty,
     runSpecVersion = version
   )
