@@ -1,19 +1,26 @@
-package mesosphere.marathon.core.event
+package mesosphere.marathon
+package core.event
 
 import akka.event.EventStream
+import com.fasterxml.jackson.annotation.JsonIgnore
+import mesosphere.marathon.api.v2.json.Formats.eventToJson
 import mesosphere.marathon.core.condition.Condition
 import mesosphere.marathon.core.health.HealthCheck
 import mesosphere.marathon.core.instance.update.InstanceChange
 import mesosphere.marathon.core.task.Task
 import mesosphere.marathon.core.instance.Instance
 import mesosphere.marathon.state.{ AppDefinition, PathId, Timestamp }
-import mesosphere.marathon.upgrade.{ DeploymentPlan, DeploymentStep }
+import mesosphere.marathon.core.deployment.{ DeploymentPlan, DeploymentStep }
+import org.apache.mesos.{ Protos => Mesos }
+import play.api.libs.json.Json
 
 import scala.collection.immutable.Seq
 
 sealed trait MarathonEvent {
   val eventType: String
   val timestamp: String
+  @JsonIgnore
+  lazy val jsonString: String = Json.stringify(eventToJson(this))
 }
 
 // api
@@ -119,7 +126,7 @@ case class RemoveHealthCheck(
 
 case class FailedHealthCheck(
   appId: PathId,
-  taskId: Task.Id,
+  instanceId: Instance.Id,
   healthCheck: HealthCheck,
   eventType: String = "failed_health_check_event",
   timestamp: String = Timestamp.now().toString)
@@ -127,21 +134,27 @@ case class FailedHealthCheck(
 
 case class HealthStatusChanged(
   appId: PathId,
-  taskId: Task.Id,
+  instanceId: Instance.Id,
   version: Timestamp,
   alive: Boolean,
   eventType: String = "health_status_changed_event",
   timestamp: String = Timestamp.now().toString)
     extends MarathonHealthCheckEvent
 
-case class UnhealthyTaskKillEvent(
+/**
+  * Event published when an instance is killed because it failed too many MarathonHealthChecks
+  * This will only be published for single container instances as we don't support Marathon
+  * health checks for pods.
+  */
+case class UnhealthyInstanceKillEvent(
   appId: PathId,
   taskId: Task.Id,
+  instanceId: Instance.Id,
   version: Timestamp,
   reason: String,
   host: String,
   slaveId: Option[String],
-  eventType: String = "unhealthy_task_kill_event",
+  eventType: String = "unhealthy_instance_kill_event",
   timestamp: String = Timestamp.now().toString) extends MarathonHealthCheckEvent
 
 // upgrade messages
@@ -202,11 +215,11 @@ case class AppTerminatedEvent(
 case class MesosStatusUpdateEvent(
   slaveId: String,
   taskId: Task.Id,
-  taskStatus: String,
+  taskStatus: Mesos.TaskState,
   message: String,
   appId: PathId,
   host: String,
-  ipAddresses: Option[Seq[org.apache.mesos.Protos.NetworkInfo.IPAddress]],
+  ipAddresses: Seq[org.apache.mesos.Protos.NetworkInfo.IPAddress],
   ports: Seq[Int],
   version: String,
   eventType: String = "status_update_event",
@@ -254,7 +267,7 @@ case class MesosFrameworkMessageEvent(
   eventType: String = "framework_message_event",
   timestamp: String = Timestamp.now().toString) extends MarathonEvent
 
-case object Events {
+object Events {
   def maybePost(event: MarathonEvent)(implicit eventBus: EventStream): Unit =
     eventBus.publish(event)
 }

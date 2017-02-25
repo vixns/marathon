@@ -1,8 +1,12 @@
-package mesosphere.marathon.core.launchqueue
+package mesosphere.marathon
+package core.launchqueue
 
+import akka.Done
 import mesosphere.marathon.core.instance.update.InstanceChange
-import mesosphere.marathon.core.launchqueue.LaunchQueue.QueuedInstanceInfo
+import mesosphere.marathon.core.launcher.OfferMatchResult
+import mesosphere.marathon.core.launchqueue.LaunchQueue.{ QueuedInstanceInfo, QueuedInstanceInfoWithStatistics }
 import mesosphere.marathon.state.{ PathId, RunSpec, Timestamp }
+import mesosphere.mesos.NoOfferMatchReason
 
 import scala.collection.immutable.Seq
 import scala.concurrent.Future
@@ -14,7 +18,6 @@ object LaunchQueue {
     * @param inProgress true if the launch queue currently tries to launch more instances
     * @param instancesLeftToLaunch number of instances to launch
     * @param finalInstanceCount the final number of instances currently targeted
-    * @param unreachableInstances number of instances currently unreachable
     * @param backOffUntil timestamp until which no further launch attempts will be made
     */
   case class QueuedInstanceInfo(
@@ -22,9 +25,24 @@ object LaunchQueue {
     inProgress: Boolean,
     instancesLeftToLaunch: Int,
     finalInstanceCount: Int,
-    unreachableInstances: Int,
     backOffUntil: Timestamp,
     startedAt: Timestamp)
+
+  case class QueuedInstanceInfoWithStatistics(
+    runSpec: RunSpec,
+    inProgress: Boolean,
+    instancesLeftToLaunch: Int,
+    finalInstanceCount: Int,
+    backOffUntil: Timestamp,
+    startedAt: Timestamp,
+    rejectSummaryLastOffers: Map[NoOfferMatchReason, Int],
+    rejectSummaryLaunchAttempt: Map[NoOfferMatchReason, Int],
+    processedOffersCount: Int,
+    unusedOffersCount: Int,
+    lastMatch: Option[OfferMatchResult.Match],
+    lastNoMatch: Option[OfferMatchResult.NoMatch],
+    lastNoMatches: Seq[OfferMatchResult.NoMatch]
+  )
 }
 
 /**
@@ -34,6 +52,10 @@ trait LaunchQueue {
 
   /** Returns all entries of the queue. */
   def list: Seq[QueuedInstanceInfo]
+
+  /** Returns all entries of the queue with embedded statistics */
+  def listWithStatistics: Seq[QueuedInstanceInfoWithStatistics]
+
   /** Returns all runnable specs for which queue entries exist. */
   def listRunSpecs: Seq[RunSpec]
 
@@ -56,5 +78,5 @@ trait LaunchQueue {
   def resetDelay(spec: RunSpec): Unit
 
   /** Notify queue about InstanceUpdate */
-  def notifyOfInstanceUpdate(update: InstanceChange): Future[Option[QueuedInstanceInfo]]
+  def notifyOfInstanceUpdate(update: InstanceChange): Future[Done]
 }

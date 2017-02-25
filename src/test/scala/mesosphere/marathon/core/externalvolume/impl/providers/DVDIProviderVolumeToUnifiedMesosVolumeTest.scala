@@ -1,13 +1,13 @@
 package mesosphere.marathon
 package core.externalvolume.impl.providers
 
+import mesosphere.UnitTest
 import mesosphere.marathon.state.{ ExternalVolume, ExternalVolumeInfo }
-import mesosphere.marathon.stream._
-import mesosphere.marathon.test.MarathonSpec
+import mesosphere.marathon.stream.Implicits._
 import org.apache.mesos.Protos.{ Parameter, Parameters, Volume }
-import org.scalatest.Matchers
 
-class DVDIProviderVolumeToUnifiedMesosVolumeTest extends MarathonSpec with Matchers {
+class DVDIProviderVolumeToUnifiedMesosVolumeTest extends UnitTest {
+
   import DVDIProviderVolumeToUnifiedMesosVolumeTest._
 
   case class TestParameters(
@@ -57,10 +57,13 @@ class DVDIProviderVolumeToUnifiedMesosVolumeTest extends MarathonSpec with Match
       )
     ) // TestParameters
   )
-  for ((testParams, idx) <- testParameters.zipWithIndex) {
-    test(s"toUnifiedMesosVolume $idx") {
-      assertResult(testParams.wantsVol, "generated volume doesn't match expectations") {
-        DVDIProvider.Builders.toUnifiedContainerVolume(testParams.externalVolume)
+
+  "DVDIProviderVolumeToUnifiedMesosVolume" should {
+    for ((testParams, idx) <- testParameters.zipWithIndex) {
+      s"toUnifiedMesosVolume $idx" in {
+        assertResult(testParams.wantsVol, "generated volume doesn't match expectations") {
+          DVDIProvider.Builders.toUnifiedContainerVolume(testParams.externalVolume)
+        }
       }
     }
   }
@@ -69,7 +72,7 @@ class DVDIProviderVolumeToUnifiedMesosVolumeTest extends MarathonSpec with Match
 // DVDIProviderVolumeToUnifiedMesosVolumeTest contains helper types and methods for testing DVDI volumes
 // with Mesos containers.
 object DVDIProviderVolumeToUnifiedMesosVolumeTest {
-  trait Opt extends Function1[Volume.Builder, Opt]
+  trait Opt extends (Volume.Builder => Opt)
 
   def containerPath(p: String): Opt = new Opt {
     override def apply(v: Volume.Builder): Opt = {
@@ -122,7 +125,7 @@ object DVDIProviderVolumeToUnifiedMesosVolumeTest {
       val old: Map[String, String] = {
         if (v.hasSource && v.getSource.hasDockerVolume && v.getSource.getDockerVolume.hasDriverOptions) {
           Map[String, String](v.getSource.getDockerVolume.getDriverOptions.getParameterList.map { p =>
-            p.getKey() -> p.getValue()
+            p.getKey -> p.getValue
           }(collection.breakOut): _*)
         } else Map.empty[String, String]
       }

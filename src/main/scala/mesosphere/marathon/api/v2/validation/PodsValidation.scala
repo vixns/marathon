@@ -1,14 +1,16 @@
-package mesosphere.marathon.api.v2.validation
+package mesosphere.marathon
+package api.v2.validation
 
 // scalastyle:off
 import java.util.regex.Pattern
 
-import com.wix.accord.dsl._
 import com.wix.accord._
+import com.wix.accord.dsl._
 import mesosphere.marathon.Features
 import mesosphere.marathon.api.v2.Validation
 import mesosphere.marathon.raml.{ ArgvCommand, Artifact, CommandHealthCheck, Constraint, Endpoint, EnvVarSecretRef, EnvVarValueOrSecret, FixedPodScalingPolicy, HealthCheck, HttpHealthCheck, Image, ImageType, Lifecycle, Network, NetworkMode, Pod, PodContainer, PodPlacementPolicy, PodScalingPolicy, PodSchedulingBackoffStrategy, PodSchedulingPolicy, PodUpgradeStrategy, Resources, SecretDef, ShellCommand, TcpHealthCheck, Volume, VolumeMount }
 import mesosphere.marathon.state.{ PathId, ResourceRole }
+import mesosphere.marathon.util.SemanticVersion
 
 import scala.collection.immutable.Seq
 import scala.util.Try
@@ -58,7 +60,7 @@ trait PodsValidation {
       unnamedAtMostOnce && realNamesAtMostOnce
     } and
       isTrue[Seq[Network]]("Must specify either a single host network, or else 1-to-n container networks") { nets =>
-        val countsByMode = nets.groupBy { net => net.mode }.mapValues(_.size)
+        val countsByMode = nets.groupBy { net => net.mode }.map { case (mode, networks) => mode -> networks.size }
         val hostNetworks = countsByMode.getOrElse(NetworkMode.Host, 0)
         val containerNetworks = countsByMode.getOrElse(NetworkMode.Container, 0)
         (hostNetworks == 1 && containerNetworks == 0) || (hostNetworks == 0 && containerNetworks > 0)
@@ -104,17 +106,21 @@ trait PodsValidation {
     }
   }
 
-  val commandCheckValidator = new Validator[CommandHealthCheck] {
-    override def apply(v1: CommandHealthCheck): Result = v1.command match {
-      case ShellCommand(shell) =>
-        (shell.length should be > 0)(shell.length)
-      case ArgvCommand(argv) =>
-        (argv.size should be > 0)(argv.size)
+  def commandCheckValidator(mesosMasterVersion: SemanticVersion) = new Validator[CommandHealthCheck] {
+    override def apply(v1: CommandHealthCheck): Result = if (mesosMasterVersion >= PodsValidation.MinCommandCheckMesosVersion) {
+      v1.command match {
+        case ShellCommand(shell) =>
+          (shell.length should be > 0)(shell.length)
+        case ArgvCommand(argv) =>
+          (argv.size should be > 0)(argv.size)
+      }
+    } else {
+      Failure(Set(RuleViolation(v1, s"Mesos Master ($mesosMasterVersion) does not support Command Health Checks", None)))
     }
   }
 
-  def healthCheckValidator(endpoints: Seq[Endpoint]) = validator[HealthCheck] { hc =>
-    hc.gracePeriodSeconds should be >= 0L
+  def healthCheckValidator(endpoints: Seq[Endpoint], mesosMasterVersion: SemanticVersion) = validator[HealthCheck] { hc =>
+    hc.gracePeriodSeconds should be >= 0
     hc.intervalSeconds should be >= 0
     hc.timeoutSeconds should be < hc.intervalSeconds
     hc.maxConsecutiveFailures should be >= 0
@@ -122,7 +128,7 @@ trait PodsValidation {
     hc.delaySeconds should be >= 0
     hc.http is optional(httpHealthCheckValidator(endpoints))
     hc.tcp is optional(tcpHealthCheckValidator(endpoints))
-    hc.exec is optional(commandCheckValidator)
+    hc.exec is optional(commandCheckValidator(mesosMasterVersion))
     hc is isTrue("Only one of http, tcp, or command may be specified") { hc =>
       Seq(hc.http.isDefined, hc.tcp.isDefined, hc.exec.isDefined).count(identity) == 1
     }
@@ -181,13 +187,13 @@ trait PodsValidation {
     lc.killGracePeriodSeconds.getOrElse(0.0) should be > 0.0
   }
 
-  def containerValidator(pod: Pod, enabledFeatures: Set[String]): Validator[PodContainer] =
+  def containerValidator(pod: Pod, enabledFeatures: Set[String], mesosMasterVersion: SemanticVersion): Validator[PodContainer] =
     validator[PodContainer] { container =>
       container.resources is valid(resourceValidator)
       container.endpoints is every(endpointValidator(pod.networks))
       container.image.getOrElse(Image(ImageType.Docker, "abc")) is valid(imageValidator)
       container.environment is envValidator(pod, enabledFeatures)
-      container.healthCheck is optional(healthCheckValidator(container.endpoints))
+      container.healthCheck is optional(healthCheckValidator(container.endpoints, mesosMasterVersion))
       container.volumeMounts is every(volumeMountValidator(pod.volumes))
       container.artifacts is every(artifactValidator)
     }
@@ -232,7 +238,7 @@ trait PodsValidation {
             } else {
               Success
             }
-          case GroupBy | MaxPer =>
+          case GroupBy =>
             if (c.value.fold(true)(i => Try(i.toInt).isSuccess)) {
               Success
             } else {
@@ -240,6 +246,15 @@ trait PodsValidation {
                 c,
                 "Value was specified but is not a number",
                 Some("GROUP_BY may either have no value or an integer value"))))
+            }
+          case MaxPer =>
+            if (c.value.fold(false)(i => Try(i.toInt).isSuccess)) {
+              Success
+            } else {
+              Failure(Set(RuleViolation(
+                c,
+                "Value was not specified or is not a number",
+                Some("MAX_PER must have an integer value"))))
             }
           case Like | Unlike =>
             c.value.fold[Result] {
@@ -272,7 +287,6 @@ trait PodsValidation {
 
   val fixedPodScalingPolicyValidator = validator[FixedPodScalingPolicy] { f =>
     f.instances should be >= 0
-    f.maxInstances.getOrElse(0) should be >= 0
   }
 
   val scalingValidator: Validator[PodScalingPolicy] = new Validator[PodScalingPolicy] {
@@ -289,15 +303,30 @@ trait PodsValidation {
     }
   }
 
-  def podDefValidator(enabledFeatures: Set[String]): Validator[Pod] = validator[Pod] { pod =>
-    PathId(pod.id) as "id" is valid and valid(PathId.absolutePathValidator)
+  val endpointNamesUnique: Validator[Pod] = isTrue("Endpoint names are unique") { pod: Pod =>
+    val names = pod.containers.flatMap(_.endpoints.map(_.name))
+    names.distinct.size == names.size
+  }
+
+  val endpointContainerPortsUnique: Validator[Pod] = isTrue("Container ports are unique") { pod: Pod =>
+    val containerPorts = pod.containers.flatMap(_.endpoints.flatMap(_.containerPort))
+    containerPorts.distinct.size == containerPorts.size
+  }
+
+  val endpointHostPortsUnique: Validator[Pod] = isTrue("Host ports are unique") { pod: Pod =>
+    val hostPorts = pod.containers.flatMap(_.endpoints.flatMap(_.hostPort)).filter(_ != 0)
+    hostPorts.distinct.size == hostPorts.size
+  }
+
+  def podDefValidator(enabledFeatures: Set[String], mesosMasterVersion: SemanticVersion): Validator[Pod] = validator[Pod] { pod =>
+    PathId(pod.id) as "id" is valid and PathId.absolutePathValidator and PathId.nonEmptyPath
     pod.user is optional(notEmpty)
     pod.environment is envValidator(pod, enabledFeatures)
     pod.volumes is every(volumeValidator(pod.containers)) and isTrue("volume names are unique") { volumes: Seq[Volume] =>
       val names = volumes.map(_.name)
       names.distinct.size == names.size
     }
-    pod.containers is notEmpty and every(containerValidator(pod, enabledFeatures))
+    pod.containers is notEmpty and every(containerValidator(pod, enabledFeatures, mesosMasterVersion))
     pod.containers is isTrue("container names are unique") { containers: Seq[PodContainer] =>
       val names = pod.containers.map(_.name)
       names.distinct.size == names.size
@@ -307,11 +336,11 @@ trait PodsValidation {
     pod.networks is every(networkValidator)
     pod.scheduling is optional(schedulingValidator)
     pod.scaling is optional(scalingValidator)
-    pod is isTrue("Endpoint names are unique") { pod: Pod =>
-      val names = pod.containers.flatMap(_.endpoints.map(_.name))
-      names.distinct.size == names.size
-    }
+    pod is endpointNamesUnique and endpointContainerPortsUnique and endpointHostPortsUnique
   }
 }
 
-object PodsValidation extends PodsValidation
+object PodsValidation extends PodsValidation {
+  // TODO: Change this value when mesos supports command checks for pods.
+  val MinCommandCheckMesosVersion = SemanticVersion(Int.MaxValue, Int.MaxValue, Int.MaxValue)
+}

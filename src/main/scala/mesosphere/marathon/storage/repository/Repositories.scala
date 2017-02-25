@@ -1,7 +1,7 @@
-package mesosphere.marathon.storage.repository
+package mesosphere.marathon
+package storage.repository
 
 import java.time.OffsetDateTime
-import java.util.UUID
 
 import akka.actor.ActorRefFactory
 import akka.http.scaladsl.marshalling.Marshaller
@@ -9,7 +9,6 @@ import akka.http.scaladsl.unmarshalling.Unmarshaller
 import akka.stream.Materializer
 import akka.stream.scaladsl.Source
 import akka.{ Done, NotUsed }
-import mesosphere.marathon.Protos.MarathonTask
 import mesosphere.marathon.core.event.EventSubscribers
 import mesosphere.marathon.core.instance.Instance
 import mesosphere.marathon.core.pod.PodDefinition
@@ -21,11 +20,8 @@ import mesosphere.marathon.core.storage.store.{ IdResolver, PersistenceStore }
 import mesosphere.marathon.core.task.Task
 import mesosphere.marathon.metrics.Metrics
 import mesosphere.marathon.state._
-import mesosphere.marathon.storage.repository.legacy._
-import mesosphere.marathon.storage.repository.legacy.store.EntityStore
-import mesosphere.marathon.upgrade.DeploymentPlan
+import mesosphere.marathon.core.deployment.DeploymentPlan
 import mesosphere.util.state.FrameworkId
-import org.apache.mesos.Protos.{ TaskID, TaskState }
 
 import scala.async.Async.{ async, await }
 import scala.collection.immutable.Seq
@@ -33,34 +29,31 @@ import scala.concurrent.{ ExecutionContext, Future }
 
 trait GroupRepository {
   /** Fetch the root, returns an empty root if the root doesn't yet exist */
-  def root(): Future[Group]
+  def root(): Future[RootGroup]
   /** List previous versions of the root */
   def rootVersions(): Source[OffsetDateTime, NotUsed]
   /** Fetch a previous version of the root */
-  def rootVersion(version: OffsetDateTime): Future[Option[Group]]
+  def rootVersion(version: OffsetDateTime): Future[Option[RootGroup]]
 
   /**
     * Store the root, new/updated apps and delete apps. fails if it could not
     * update the apps or the root, but deletion errors are ignored.
     */
-  def storeRoot(group: Group, updatedApps: Seq[AppDefinition], deletedApps: Seq[PathId],
+  def storeRoot(rootGroup: RootGroup, updatedApps: Seq[AppDefinition], deletedApps: Seq[PathId],
     updatedPods: Seq[PodDefinition], deletedPods: Seq[PathId]): Future[Done]
 
-  def storeRootVersion(group: Group, updatedApps: Seq[AppDefinition], updatedPods: Seq[PodDefinition]): Future[Done]
+  def storeRootVersion(rootGroup: RootGroup, updatedApps: Seq[AppDefinition], updatedPods: Seq[PodDefinition]): Future[Done]
+
+  def appVersions(id: PathId): Source[OffsetDateTime, NotUsed]
+
+  def appVersion(id: PathId, version: OffsetDateTime): Future[Option[AppDefinition]]
+
+  def podVersions(id: PathId): Source[OffsetDateTime, NotUsed]
+
+  def podVersion(id: PathId, version: OffsetDateTime): Future[Option[PodDefinition]]
 }
 
 object GroupRepository {
-  def legacyRepository(
-    store: (String, () => Group) => EntityStore[Group],
-    maxVersions: Int,
-    appRepository: AppRepository,
-    podRepository: PodRepository)(implicit
-    ctx: ExecutionContext,
-    metrics: Metrics): GroupEntityRepository = {
-    val entityStore = store("group:", () => Group.empty)
-    new GroupEntityRepository(entityStore, maxVersions, appRepository, podRepository)
-  }
-
   def zkRepository(
     store: PersistenceStore[ZkId, String, ZkSerialized],
     appRepository: AppRepository,
@@ -86,13 +79,6 @@ trait ReadOnlyAppRepository extends ReadOnlyVersionedRepository[PathId, AppDefin
 trait AppRepository extends VersionedRepository[PathId, AppDefinition] with ReadOnlyAppRepository
 
 object AppRepository {
-  def legacyRepository(
-    store: (String, () => AppDefinition) => EntityStore[AppDefinition],
-    maxVersions: Int)(implicit ctx: ExecutionContext, metrics: Metrics): AppEntityRepository = {
-    val entityStore = store("app:", () => AppDefinition.apply(id = AppDefinition.DefaultId))
-    new AppEntityRepository(entityStore, maxVersions)
-  }
-
   def zkRepository(
     persistenceStore: PersistenceStore[ZkId, String, ZkSerialized])(implicit ctx: ExecutionContext): AppRepositoryImpl[ZkId, String, ZkSerialized] = {
     import mesosphere.marathon.storage.store.ZkStoreSerialization._
@@ -110,13 +96,6 @@ trait ReadOnlyPodRepository extends ReadOnlyVersionedRepository[PathId, PodDefin
 trait PodRepository extends VersionedRepository[PathId, PodDefinition] with ReadOnlyPodRepository
 
 object PodRepository {
-  def legacyRepository(
-    store: (String, () => PodDefinition) => EntityStore[PodDefinition],
-    maxVersions: Int)(implicit ctx: ExecutionContext, metrics: Metrics): PodEntityRepository = {
-    val entityStore = store("pod:", () => PodDefinition.apply())
-    new PodEntityRepository(entityStore, maxVersions)
-  }
-
   def zkRepository(
     persistenceStore: PersistenceStore[ZkId, String, ZkSerialized]
   )(implicit ctx: ExecutionContext): PodRepositoryImpl[ZkId, String, ZkSerialized] = {
@@ -135,12 +114,6 @@ object PodRepository {
 trait DeploymentRepository extends Repository[String, DeploymentPlan]
 
 object DeploymentRepository {
-  def legacyRepository(store: (String, () => DeploymentPlan) => EntityStore[DeploymentPlan])(implicit
-    ctx: ExecutionContext,
-    metrics: Metrics): DeploymentEntityRepository = {
-    val entityStore = store("deployment:", () => DeploymentPlan.empty)
-    new DeploymentEntityRepository(entityStore)
-  }
 
   def zkRepository(
     persistenceStore: PersistenceStore[ZkId, String, ZkSerialized],
@@ -178,15 +151,6 @@ private[storage] trait TaskRepository extends Repository[Task.Id, Task] {
 }
 
 object TaskRepository {
-  def legacyRepository(
-    store: (String, () => MarathonTaskState) => EntityStore[MarathonTaskState])(implicit
-    ctx: ExecutionContext,
-    metrics: Metrics): TaskEntityRepository = {
-    val entityStore = store(
-      TaskEntityRepository.storePrefix,
-      () => MarathonTaskState(MarathonTask.newBuilder().setId(UUID.randomUUID().toString).build()))
-    new TaskEntityRepository(entityStore)
-  }
 
   def zkRepository(persistenceStore: PersistenceStore[ZkId, String, ZkSerialized]): TaskRepository = {
     import mesosphere.marathon.storage.store.ZkStoreSerialization._
@@ -206,14 +170,6 @@ trait InstanceRepository extends Repository[Instance.Id, Instance] {
 }
 
 object InstanceRepository {
-  def legacyRepository(
-    store: (String, () => Instance) => EntityStore[Instance])(implicit ctx: ExecutionContext, metrics: Metrics): InstanceRepository = {
-    val entityStore = store(
-      "instance:",
-      () => Instance()
-    )
-    new InstanceEntityRepository(entityStore)
-  }
 
   def zkRepository(persistenceStore: PersistenceStore[ZkId, String, ZkSerialized]): InstanceRepository = {
     import mesosphere.marathon.storage.store.ZkStoreSerialization._
@@ -229,17 +185,6 @@ object InstanceRepository {
 trait TaskFailureRepository extends VersionedRepository[PathId, TaskFailure]
 
 object TaskFailureRepository {
-  def legacyRepository(
-    store: (String, () => TaskFailure) => EntityStore[TaskFailure])(implicit
-    ctx: ExecutionContext,
-    metrics: Metrics): TaskFailureEntityRepository = {
-    val entityStore = store("taskFailure:", () => TaskFailure(
-      PathId.empty,
-      TaskID.newBuilder().setValue("").build,
-      TaskState.TASK_STAGING
-    ))
-    new TaskFailureEntityRepository(entityStore, 1)
-  }
 
   def zkRepository(persistenceStore: PersistenceStore[ZkId, String, ZkSerialized]): TaskFailureRepository = {
     import mesosphere.marathon.storage.store.ZkStoreSerialization._
@@ -255,10 +200,6 @@ object TaskFailureRepository {
 trait FrameworkIdRepository extends SingletonRepository[FrameworkId]
 
 object FrameworkIdRepository {
-  def legacyRepository(store: (String, () => FrameworkId) => EntityStore[FrameworkId]): FrameworkIdEntityRepository = {
-    val entityStore = store("framework:", () => FrameworkId(UUID.randomUUID().toString))
-    new FrameworkIdEntityRepository(entityStore)
-  }
 
   def zkRepository(persistenceStore: PersistenceStore[ZkId, String, ZkSerialized]): FrameworkIdRepository = {
     import mesosphere.marathon.storage.store.ZkStoreSerialization._
@@ -274,10 +215,6 @@ object FrameworkIdRepository {
 trait EventSubscribersRepository extends SingletonRepository[EventSubscribers]
 
 object EventSubscribersRepository {
-  def legacyRepository(store: (String, () => EventSubscribers) => EntityStore[EventSubscribers]): EventSubscribersEntityRepository = {
-    val entityStore = store("events:", () => EventSubscribers(Set.empty[String]))
-    new EventSubscribersEntityRepository(entityStore)
-  }
 
   def zkRepository(persistenceStore: PersistenceStore[ZkId, String, ZkSerialized]): EventSubscribersRepository = {
     import mesosphere.marathon.storage.store.ZkStoreSerialization._

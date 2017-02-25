@@ -10,17 +10,23 @@ types:
       name?:
         type: string
         description: The name used to identify this readiness check
-      protocol?: strings.HttpScheme
+        default: readinessCheck
+      protocol?:
+        type: strings.HttpScheme
+        default: HTTP
       path?:
         type: strings.Path
         description: |
           Path to endpoint exposed by the task that will provide readiness status.
         example: /path/to/health.
+        default: /
       portName?:
         type: string
+        pattern: ^[a-z][-a-z0-9]*$
         description: |
           Name of the port to query as described in the portDefinitions.
         example: http-api
+        default: http-api
       intervalSeconds?:
         type: integer
         format: int32
@@ -44,8 +50,10 @@ types:
           minimum: 100
           maximum: 999
         description: The HTTP(s) status codes to treat as 'ready'
+        uniqueItems: true
       preserveLastResponse?:
         type: boolean
         description: |
           If and only if true, preserve the last readiness check responses and
           expose them in the API as part of a deployment.
+        default: false

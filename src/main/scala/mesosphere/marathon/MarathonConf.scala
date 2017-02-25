@@ -1,5 +1,6 @@
 package mesosphere.marathon
 
+import mesosphere.marathon.core.deployment.DeploymentConfig
 import mesosphere.marathon.core.event.EventConf
 import mesosphere.marathon.core.flow.{ LaunchTokenConfig, ReviveOffersConfig }
 import mesosphere.marathon.core.heartbeat.MesosHeartbeatMonitor
@@ -15,7 +16,6 @@ import mesosphere.marathon.core.task.update.TaskStatusUpdateConfig
 import mesosphere.marathon.io.storage.StorageProvider
 import mesosphere.marathon.state.ResourceRole
 import mesosphere.marathon.storage.StorageConf
-import mesosphere.marathon.upgrade.UpgradeConfig
 import org.rogach.scallop.ScallopConf
 
 import scala.sys.SystemProperties
@@ -35,7 +35,7 @@ trait MarathonConf
     with EventConf with GroupManagerConfig with LaunchQueueConfig with LaunchTokenConfig with LeaderProxyConf
     with MarathonSchedulerServiceConfig with OfferMatcherManagerConfig with OfferProcessorConfig
     with PluginManagerConfiguration with ReviveOffersConfig with StorageConf with KillConfig
-    with TaskJobsConfig with TaskStatusUpdateConfig with InstanceTrackerConfig with UpgradeConfig with ZookeeperConf {
+    with TaskJobsConfig with TaskStatusUpdateConfig with InstanceTrackerConfig with DeploymentConfig with ZookeeperConf {
 
   lazy val mesosMaster = opt[String](
     "master",
@@ -58,7 +58,7 @@ trait MarathonConf
     validate = validateFeatures
   )
 
-  lazy val availableFeatures: Set[String] = features.get.map(parseFeatures).getOrElse(Set.empty)
+  override lazy val availableFeatures: Set[String] = features.get.map(parseFeatures).getOrElse(Set.empty)
 
   private[this] def parseFeatures(str: String): Set[String] =
     str.split(',').map(_.trim).filter(_.nonEmpty).toSet
@@ -227,14 +227,6 @@ trait MarathonConf
       "scale apps.",
     default = Some(300000L)) // 300 seconds (5 minutes)
 
-  @deprecated("marathon_store_timeout is no longer used and will be removed soon.", "v0.12")
-  lazy val marathonStoreTimeout = opt[Long](
-    "marathon_store_timeout",
-    descr = "(deprecated) Maximum time, in milliseconds, to wait for persistent storage " +
-      "operations to complete. This option is no longer used and " +
-      "will be removed in a later release.",
-    default = None)
-
   lazy val mesosUser = opt[String](
     "mesos_user",
     descr = "Mesos user for this framework.",
@@ -310,19 +302,10 @@ trait MarathonConf
 
   lazy val leaderElectionBackend = opt[String](
     "leader_election_backend",
-    descr = "The backend for leader election to use. One of twitter_commons, curator.",
+    descr = "The backend for leader election to use.",
     hidden = true,
-    validate = Set("twitter_commons", "curator").contains,
+    validate = Set("curator").contains,
     default = Some("curator")
-  )
-
-  lazy val internalMaxQueuedRootGroupUpdates = opt[Int](
-    "max_queued_root_group_updates",
-    descr = "INTERNAL TUNING PARAMETER: " +
-      "The maximum number of root group updates that we queue before rejecting updates.",
-    noshort = true,
-    hidden = true,
-    default = Some(500)
   )
 
   lazy val mesosHeartbeatInterval = opt[Long](
@@ -341,3 +324,4 @@ trait MarathonConf
     hidden = true,
     default = Some(MesosHeartbeatMonitor.DEFAULT_HEARTBEAT_FAILURE_THRESHOLD))
 }
+

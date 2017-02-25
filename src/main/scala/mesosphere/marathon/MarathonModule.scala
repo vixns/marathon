@@ -11,20 +11,16 @@ import akka.stream.Materializer
 import com.google.inject._
 import com.google.inject.name.Names
 import mesosphere.chaos.http.HttpConf
+import mesosphere.marathon.core.deployment.DeploymentManager
 import mesosphere.marathon.core.election.ElectionService
-import mesosphere.marathon.core.group.GroupManager
 import mesosphere.marathon.core.health.HealthCheckManager
 import mesosphere.marathon.core.heartbeat._
 import mesosphere.marathon.core.launchqueue.LaunchQueue
-import mesosphere.marathon.core.readiness.ReadinessCheckExecutor
 import mesosphere.marathon.core.task.termination.KillService
-import mesosphere.marathon.core.task.tracker.InstanceTracker
 import mesosphere.marathon.io.storage.StorageProvider
 import mesosphere.marathon.metrics.Metrics
-import mesosphere.marathon.storage.repository.{ ReadOnlyPodRepository, DeploymentRepository, GroupRepository, ReadOnlyAppRepository }
-import mesosphere.marathon.upgrade.DeploymentManager
+import mesosphere.marathon.storage.repository.{ DeploymentRepository, GroupRepository }
 import mesosphere.util.state._
-import mesosphere.util.{ CapConcurrentExecutions, CapConcurrentExecutionsMetrics }
 import org.apache.mesos.Scheduler
 import org.slf4j.LoggerFactory
 
@@ -35,7 +31,6 @@ object ModuleNames {
   final val HOST_PORT = "HOST_PORT"
 
   final val SERVER_SET_PATH = "SERVER_SET_PATH"
-  final val SERIALIZE_GROUP_UPDATES = "SERIALIZE_GROUP_UPDATES"
   final val HISTORY_ACTOR_PROPS = "HISTORY_ACTOR_PROPS"
 
   final val STORE_APP = "AppStore"
@@ -61,11 +56,9 @@ class MarathonModule(conf: MarathonConf, http: HttpConf)
     bind(classOf[ZookeeperConf]).toInstance(conf)
 
     // MesosHeartbeatMonitor decorates MarathonScheduler
+    bind(classOf[MarathonScheduler]).in(Scopes.SINGLETON)
+    bind(classOf[Scheduler]).annotatedWith(Names.named(MesosHeartbeatMonitor.BASE)).toProvider(getProvider(classOf[MarathonScheduler]))
     bind(classOf[Scheduler]).to(classOf[MesosHeartbeatMonitor]).in(Scopes.SINGLETON)
-    bind(classOf[Scheduler])
-      .annotatedWith(Names.named(MesosHeartbeatMonitor.BASE))
-      .to(classOf[MarathonScheduler])
-      .in(Scopes.SINGLETON)
 
     bind(classOf[MarathonSchedulerDriverHolder]).in(Scopes.SINGLETON)
     bind(classOf[SchedulerDriverFactory]).to(classOf[MesosSchedulerDriverFactory]).in(Scopes.SINGLETON)
@@ -106,60 +99,28 @@ class MarathonModule(conf: MarathonConf, http: HttpConf)
   @SuppressWarnings(Array("MaxParameters"))
   def provideSchedulerActor(
     system: ActorSystem,
-    appRepository: ReadOnlyAppRepository,
-    podRepository: ReadOnlyPodRepository,
     groupRepository: GroupRepository,
     deploymentRepository: DeploymentRepository,
     healthCheckManager: HealthCheckManager,
-    instanceTracker: InstanceTracker,
     killService: KillService,
     launchQueue: LaunchQueue,
     driverHolder: MarathonSchedulerDriverHolder,
     electionService: ElectionService,
-    storage: StorageProvider,
     eventBus: EventStream,
-    readinessCheckExecutor: ReadinessCheckExecutor,
+    schedulerActions: SchedulerActions,
+    deploymentManager: DeploymentManager,
     @Named(ModuleNames.HISTORY_ACTOR_PROPS) historyActorProps: Props)(implicit mat: Materializer): ActorRef = {
     val supervision = OneForOneStrategy() {
       case NonFatal(_) => Restart
     }
 
-    import scala.concurrent.ExecutionContext.Implicits.global
-
-    def createSchedulerActions(schedulerActor: ActorRef): SchedulerActions = {
-      new SchedulerActions(
-        appRepository,
-        podRepository,
-        groupRepository,
-        healthCheckManager,
-        instanceTracker,
-        launchQueue,
-        eventBus,
-        schedulerActor,
-        killService)
-    }
-
-    def deploymentManagerProps(schedulerActions: SchedulerActions): Props = {
-      Props(
-        new DeploymentManager(
-          instanceTracker,
-          killService,
-          launchQueue,
-          schedulerActions,
-          storage,
-          healthCheckManager,
-          eventBus,
-          readinessCheckExecutor
-        )
-      )
-    }
-
     system.actorOf(
       MarathonSchedulerActor.props(
-        createSchedulerActions,
-        deploymentManagerProps,
-        historyActorProps,
+        groupRepository,
+        schedulerActions,
+        deploymentManager,
         deploymentRepository,
+        historyActorProps,
         healthCheckManager,
         killService,
         launchQueue,
@@ -191,20 +152,6 @@ class MarathonModule(conf: MarathonConf, http: HttpConf)
   @Singleton
   def provideStorageProvider(http: HttpConf): StorageProvider =
     StorageProvider.provider(conf, http)
-
-  @Named(ModuleNames.SERIALIZE_GROUP_UPDATES)
-  @Provides
-  @Singleton
-  def provideSerializeGroupUpdates(metrics: Metrics, actorRefFactory: ActorRefFactory): CapConcurrentExecutions = {
-    val capMetrics = new CapConcurrentExecutionsMetrics(metrics, classOf[GroupManager])
-    CapConcurrentExecutions(
-      capMetrics,
-      actorRefFactory,
-      "serializeGroupUpdates",
-      maxConcurrent = 1,
-      maxQueued = conf.internalMaxQueuedRootGroupUpdates()
-    )
-  }
 
   @Provides
   @Singleton

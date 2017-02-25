@@ -6,8 +6,16 @@ import mesosphere.marathon.state.{ PathId, Timestamp }
 @SuppressWarnings(Array("NullAssignment"))
 class Exception(msg: String, cause: Throwable = null) extends scala.RuntimeException(msg, cause)
 
-case class UnknownAppException(id: PathId, version: Option[Timestamp] = None) extends Exception(
-  s"App/Pod '$id' does not exist" + version.fold("")(v => s" in version $v")
+case class PathNotFoundException(id: PathId, version: Option[Timestamp] = None) extends Exception(
+  s"Path '$id' does not exist" + version.fold("")(v => s" in version $v")
+)
+
+case class AppNotFoundException(id: PathId, version: Option[Timestamp] = None) extends Exception(
+  s"App '$id' does not exist" + version.fold("")(v => s" in version $v")
+)
+
+case class PodNotFoundException(id: PathId, version: Option[Timestamp] = None) extends Exception(
+  s"Pod '$id' does not exist" + version.fold("")(v => s" in version $v")
 )
 
 case class UnknownGroupException(id: PathId) extends Exception(s"Group '$id' does not exist")
@@ -40,7 +48,7 @@ case class AccessDeniedException(msg: String = "Authorization Denied") extends E
   * @param obj object which is not valid
   * @param failure validation information kept in a Failure object
   */
-case class ValidationFailedException(obj: Any, failure: Failure) extends Exception("Validation failed")
+case class ValidationFailedException(obj: Any, failure: Failure) extends Exception(s"Validation failed: $failure")
 
 case class SerializationFailedException(message: String) extends Exception(message)
 

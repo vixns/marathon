@@ -6,7 +6,7 @@ import java.util.UUID
 import akka.util.ByteString
 import mesosphere.UnitTest
 import mesosphere.marathon.integration.setup.ZookeeperServerTest
-import mesosphere.marathon.stream._
+import mesosphere.marathon.stream.Implicits._
 import org.apache.zookeeper.ZooDefs.Perms
 import org.apache.zookeeper.data.{ ACL, Id }
 import org.apache.zookeeper.server.auth.DigestAuthenticationProvider
@@ -34,7 +34,7 @@ class RichCuratorFrameworkTest extends UnitTest with ZookeeperServerTest {
     "be able to create a simple node" in {
       richClient.create("/1").futureValue should equal("/1")
       val childrenData = client.children("/").futureValue
-      childrenData.children should contain only ("1")
+      childrenData.children should contain only "1"
       childrenData.path should equal("/")
       childrenData.stat.getVersion should equal(0)
       childrenData.stat.getEphemeralOwner should equal(0)
@@ -44,7 +44,7 @@ class RichCuratorFrameworkTest extends UnitTest with ZookeeperServerTest {
       richClient.create("/2", data = Some(ByteString("abc"))).futureValue should equal("/2")
       client.data("/2").futureValue.data should equal(ByteString("abc"))
       val childrenData = client.children("/").futureValue
-      childrenData.children should contain only ("2")
+      childrenData.children should contain only "2"
       childrenData.path should equal("/")
       childrenData.stat.getVersion should equal(0)
       childrenData.stat.getEphemeralOwner should equal(0)

@@ -3,8 +3,8 @@ package core.pod
 
 // scalastyle:off
 import mesosphere.marathon.core.task.Task
-import mesosphere.marathon.raml.{ Endpoint, Pod, Raml, Resources }
-import mesosphere.marathon.state.{ AppDefinition, BackoffStrategy, EnvVarValue, MarathonState, PathId, RunSpec, Secret, Timestamp, UpgradeStrategy, VersionInfo }
+import mesosphere.marathon.raml.{ Endpoint, ExecutorResources, Pod, Raml, Resources }
+import mesosphere.marathon.state._
 import play.api.libs.json.Json
 
 import scala.collection.immutable.Seq
@@ -22,22 +22,24 @@ case class PodDefinition(
     secrets: Map[String, Secret] = PodDefinition.DefaultSecrets,
     containers: Seq[MesosContainer] = PodDefinition.DefaultContainers,
     instances: Int = PodDefinition.DefaultInstances,
-    maxInstances: Option[Int] = PodDefinition.DefaultMaxInstances,
     constraints: Set[Protos.Constraint] = PodDefinition.DefaultConstraints,
     version: Timestamp = PodDefinition.DefaultVersion,
     podVolumes: Seq[Volume] = PodDefinition.DefaultVolumes,
     networks: Seq[Network] = PodDefinition.DefaultNetworks,
     backoffStrategy: BackoffStrategy = PodDefinition.DefaultBackoffStrategy,
-    upgradeStrategy: UpgradeStrategy = PodDefinition.DefaultUpgradeStrategy
+    upgradeStrategy: UpgradeStrategy = PodDefinition.DefaultUpgradeStrategy,
+    executorResources: Resources = PodDefinition.DefaultExecutorResources,
+    override val unreachableStrategy: UnreachableStrategy = PodDefinition.DefaultUnreachableStrategy,
+    override val killSelection: KillSelection = KillSelection.DefaultKillSelection
 ) extends RunSpec with plugin.PodSpec with MarathonState[Protos.Json, PodDefinition] {
 
   val endpoints: Seq[Endpoint] = containers.flatMap(_.endpoints)
   val resources = aggregateResources()
 
   def aggregateResources(filter: MesosContainer => Boolean = _ => true) = Resources(
-    cpus = PodDefinition.DefaultExecutorResources.cpus + containers.withFilter(filter).map(_.resources.cpus).sum,
-    mem = PodDefinition.DefaultExecutorResources.mem + containers.withFilter(filter).map(_.resources.mem).sum,
-    disk = PodDefinition.DefaultExecutorResources.disk + containers.withFilter(filter).map(_.resources.disk).sum,
+    cpus = executorResources.cpus + containers.withFilter(filter).map(_.resources.cpus).sum,
+    mem = executorResources.mem + containers.withFilter(filter).map(_.resources.mem).sum,
+    disk = executorResources.disk + containers.withFilter(filter).map(_.resources.disk).sum,
     gpus = containers.withFilter(filter).map(_.resources.gpus).sum
   )
 
@@ -68,7 +70,7 @@ case class PodDefinition(
   override def needsRestart(to: RunSpec): Boolean = this.version != to.version || isUpgrade(to)
 
   override def isOnlyScaleChange(to: RunSpec): Boolean = to match {
-    case to: PodDefinition => !isUpgrade(to) && (instances != to.instances || maxInstances != to.maxInstances)
+    case to: PodDefinition => !isUpgrade(to) && (instances != to.instances)
     case _ => throw new IllegalStateException("Can't change pod to app")
   }
 
@@ -92,7 +94,7 @@ case class PodDefinition(
   def container(taskId: Task.Id): Option[MesosContainer] = taskId.containerName.flatMap(container(_))
   def volume(volumeName: String): Volume =
     podVolumes.find(_.name == volumeName).getOrElse(
-      throw new IllegalArgumentException(s"volume named ${volumeName} is unknown to this pod"))
+      throw new IllegalArgumentException(s"volume named $volumeName is unknown to this pod"))
 }
 
 object PodDefinition {
@@ -100,7 +102,7 @@ object PodDefinition {
     Raml.fromRaml(Json.parse(proto.getJson).as[Pod])
   }
 
-  val DefaultExecutorResources = Resources(cpus = 0.1, mem = 32.0, disk = 10.0, gpus = 0)
+  val DefaultExecutorResources: Resources = ExecutorResources().fromRaml
   val DefaultId = PathId.empty
   val DefaultUser = Option.empty[String]
   val DefaultEnv = Map.empty[String, EnvVarValue]
@@ -109,11 +111,12 @@ object PodDefinition {
   val DefaultSecrets = Map.empty[String, Secret]
   val DefaultContainers = Seq.empty[MesosContainer]
   val DefaultInstances = 1
-  val DefaultMaxInstances = Option.empty[Int]
   val DefaultConstraints = Set.empty[Protos.Constraint]
   val DefaultVersion = Timestamp.now()
   val DefaultVolumes = Seq.empty[Volume]
   val DefaultNetworks = Seq.empty[Network]
   val DefaultBackoffStrategy = BackoffStrategy()
   val DefaultUpgradeStrategy = AppDefinition.DefaultUpgradeStrategy
+  val DefaultUnreachableStrategy = UnreachableStrategy.default(resident = false)
+
 }

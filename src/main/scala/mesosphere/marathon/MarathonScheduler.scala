@@ -8,7 +8,9 @@ import mesosphere.marathon.core.event.{ SchedulerRegisteredEvent, _ }
 import mesosphere.marathon.core.launcher.OfferProcessor
 import mesosphere.marathon.core.task.update.TaskStatusUpdateProcessor
 import mesosphere.marathon.storage.repository.FrameworkIdRepository
-import mesosphere.marathon.stream._
+import mesosphere.marathon.stream.Implicits._
+import mesosphere.marathon.util.SemanticVersion
+import mesosphere.mesos.LibMesos
 import mesosphere.util.state.{ FrameworkId, MesosLeaderInfo }
 import org.apache.mesos.Protos._
 import org.apache.mesos.{ Scheduler, SchedulerDriver }
@@ -27,6 +29,7 @@ class MarathonScheduler @Inject() (
 
   private[this] val log = LoggerFactory.getLogger(getClass.getName)
 
+  private var lastMesosMasterVersion: Option[SemanticVersion] = Option.empty
   import scala.concurrent.ExecutionContext.Implicits.global
 
   implicit val zkTimeout = config.zkTimeoutDuration
@@ -36,6 +39,7 @@ class MarathonScheduler @Inject() (
     frameworkId: FrameworkID,
     master: MasterInfo): Unit = {
     log.info(s"Registered as ${frameworkId.getValue} to master '${master.getId}'")
+    masterVersionCheck(master)
     Await.result(frameworkIdRepository.store(FrameworkId.fromProto(frameworkId)), zkTimeout)
     mesosLeaderInfo.onNewMasterInfo(master)
     eventBus.publish(SchedulerRegisteredEvent(frameworkId.getValue, master.getHostname))
@@ -43,6 +47,7 @@ class MarathonScheduler @Inject() (
 
   override def reregistered(driver: SchedulerDriver, master: MasterInfo): Unit = {
     log.info("Re-registered to %s".format(master))
+    masterVersionCheck(master)
     mesosLeaderInfo.onNewMasterInfo(master)
     eventBus.publish(SchedulerReregisteredEvent(master.getHostname))
   }
@@ -119,6 +124,28 @@ class MarathonScheduler @Inject() (
     }
     suicide(removeFrameworkId)
   }
+
+  /**
+    * Verifies that the Mesos Master we connected to meets our minimum
+    * required version.
+    *
+    * If the minimum version is not met, then we log an error and
+    * suicide.
+    *
+    * @param masterInfo Contains the version reported by the master.
+    */
+  protected def masterVersionCheck(masterInfo: MasterInfo): Unit = {
+    val masterVersion = masterInfo.getVersion
+    log.info(s"Mesos Master version $masterVersion")
+    lastMesosMasterVersion = SemanticVersion(masterVersion)
+    if (!LibMesos.masterCompatible(masterVersion)) {
+      log.error(s"Mesos Master version $masterVersion does not meet minimum required version ${LibMesos.MesosMasterMinimumVersion}")
+      suicide(removeFrameworkId = false)
+    }
+  }
+
+  /** The last version of the mesos master */
+  def mesosMasterVersion(): Option[SemanticVersion] = lastMesosMasterVersion
 
   /**
     * Exits the JVM process, optionally deleting Marathon's FrameworkID

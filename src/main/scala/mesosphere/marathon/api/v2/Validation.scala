@@ -1,4 +1,5 @@
-package mesosphere.marathon.api.v2
+package mesosphere.marathon
+package api.v2
 
 import java.net._
 
@@ -10,7 +11,6 @@ import org.slf4j.LoggerFactory
 import play.api.libs.json._
 
 import scala.collection.GenTraversableOnce
-import scala.util.Try
 import scala.util.matching.Regex
 
 // TODO(jdef) move this into package "validation"
@@ -143,26 +143,6 @@ object Validation {
         } catch {
           case e: MalformedURLException => Failure(Set(RuleViolation(url, e.getMessage, None)))
         }
-      }
-    }
-  }
-
-  def urlCanBeResolvedValidator: Validator[String] = {
-    new Validator[String] {
-      def apply(url: String) = {
-        Try {
-          new URL(url).openConnection() match {
-            case http: HttpURLConnection =>
-              http.setRequestMethod("HEAD")
-              if (http.getResponseCode == HttpURLConnection.HTTP_OK) Success
-              else Failure(Set(RuleViolation(url, "URL could not be resolved.", None)))
-            case other: URLConnection =>
-              other.getInputStream
-              Success //if we come here, we could read the stream
-          }
-        }.getOrElse(
-          Failure(Set(RuleViolation(url, "URL could not be resolved.", None)))
-        )
       }
     }
   }

@@ -1,4 +1,5 @@
-package mesosphere.marathon.core.event
+package mesosphere.marathon
+package core.event
 
 import akka.actor.{ ActorRef, ActorSystem, Props }
 import akka.event.EventStream
@@ -60,6 +61,8 @@ class EventModule(
   lazy val httpCallbackSubscriptionService: HttpCallbackSubscriptionService = {
     if (conf.httpCallbacksEnabled) {
       log.info("Using HttpCallbackEventSubscriber for event notification")
+      log.warn("HttpCallbackEventSubscriber support is deprecated with Marathon 1.4 and will be removed in an " +
+        "upcoming version. Please use the event stream instead.")
       new ActorHttpCallbackSubscriptionService(subscribersKeeperActor, eventBus, conf)
     } else {
       log.info("Event notification disabled.")

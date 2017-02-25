@@ -21,7 +21,7 @@ import mesosphere.marathon.core.plugin.PluginManager
 import mesosphere.marathon.plugin.auth._
 import mesosphere.marathon.state.PathId._
 import mesosphere.marathon.state._
-import mesosphere.marathon.stream._
+import mesosphere.marathon.stream.Implicits._
 import play.api.libs.json.Json
 
 @Path("v2/apps")
@@ -116,7 +116,7 @@ class AppsResource @Inject() (
     )
 
     def transitiveApps(groupId: PathId): Response = {
-      result(groupManager.group(groupId)) match {
+      groupManager.group(groupId) match {
         case Some(group) =>
           checkAuthorization(ViewGroup, group)
           val appsWithTasks = result(appInfoService.selectAppsInGroup(groupId, authzSelector, resolvedEmbed))
@@ -174,14 +174,14 @@ class AppsResource @Inject() (
     withValid(Json.parse(body).as[Seq[AppUpdate]].map(_.withCanonizedIds())) { updates =>
       val version = clock.now()
 
-      def updateGroup(root: Group): Group = updates.foldLeft(root) { (group, update) =>
+      def updateGroup(rootGroup: RootGroup): RootGroup = updates.foldLeft(rootGroup) { (group, update) =>
         update.id match {
           case Some(id) => group.updateApp(id, updateOrCreate(id, _, update), version)
           case None => group
         }
       }
 
-      deploymentResult(result(groupManager.update(PathId.empty, updateGroup, version, force)))
+      deploymentResult(result(groupManager.updateRoot(PathId.empty, updateGroup, version, force)))
     }
   }
 
@@ -194,12 +194,12 @@ class AppsResource @Inject() (
     @Context req: HttpServletRequest): Response = authenticated(req) { implicit identity =>
     val appId = id.toRootPath
 
-    def deleteAppFromGroup(group: Group) = {
-      checkAuthorization(DeleteRunSpec, group.app(appId), UnknownAppException(appId))
-      group.removeApplication(appId)
+    def deleteApp(rootGroup: RootGroup) = {
+      checkAuthorization(DeleteRunSpec, rootGroup.app(appId), AppNotFoundException(appId))
+      rootGroup.removeApp(appId)
     }
 
-    deploymentResult(result(groupManager.update(appId.parent, deleteAppFromGroup, force = force)))
+    deploymentResult(result(groupManager.updateRoot(appId.parent, deleteApp, force = force)))
   }
 
   @Path("{appId:.+}/tasks")
@@ -221,7 +221,7 @@ class AppsResource @Inject() (
       opt
         .map(checkAuthorization(UpdateRunSpec, _))
         .map(_.markedForRestarting)
-        .getOrElse(throw UnknownAppException(appId))
+        .getOrElse(throw AppNotFoundException(appId))
     }
 
     val newVersion = clock.now()
@@ -247,7 +247,7 @@ class AppsResource @Inject() (
     }
 
     def rollback(current: AppDefinition, version: Timestamp): AppDefinition = {
-      val app = service.getApp(appId, version).getOrElse(throw UnknownAppException(appId))
+      val app = service.getApp(appId, version).getOrElse(throw AppNotFoundException(appId))
       checkAuthorization(ViewRunSpec, app)
       checkAuthorization(UpdateRunSpec, current)
       app

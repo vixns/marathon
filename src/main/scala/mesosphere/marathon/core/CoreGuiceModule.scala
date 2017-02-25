@@ -1,39 +1,38 @@
-package mesosphere.marathon.core
+package mesosphere.marathon
+package core
 
 import javax.inject.Named
 
-import mesosphere.marathon.core.instance.update.InstanceChangeHandler
-import mesosphere.marathon.core.pod.PodManager
-import mesosphere.marathon.core.task.tracker.InstanceCreationHandler
-import mesosphere.marathon.storage.migration.Migration
-import mesosphere.marathon.storage.repository._
-import akka.actor.{ ActorRef, ActorRefFactory, Props }
+import akka.actor.{ ActorRef, Props }
 import akka.stream.Materializer
 import com.google.inject._
 import com.google.inject.name.Names
 import mesosphere.marathon.core.appinfo.{ AppInfoModule, AppInfoService, GroupInfoService, PodStatusService }
 import mesosphere.marathon.core.base.Clock
+import mesosphere.marathon.core.deployment.DeploymentManager
 import mesosphere.marathon.core.election.ElectionService
 import mesosphere.marathon.core.event.HttpCallbackSubscriptionService
 import mesosphere.marathon.core.group.GroupManager
 import mesosphere.marathon.core.health.HealthCheckManager
+import mesosphere.marathon.core.instance.update.InstanceChangeHandler
 import mesosphere.marathon.core.launcher.OfferProcessor
 import mesosphere.marathon.core.launchqueue.LaunchQueue
 import mesosphere.marathon.core.leadership.{ LeadershipCoordinator, LeadershipModule }
 import mesosphere.marathon.core.plugin.{ PluginDefinitions, PluginManager }
+import mesosphere.marathon.core.pod.PodManager
 import mesosphere.marathon.core.readiness.ReadinessCheckExecutor
 import mesosphere.marathon.core.task.bus.{ TaskChangeObservables, TaskStatusEmitter }
 import mesosphere.marathon.core.task.jobs.TaskJobsModule
 import mesosphere.marathon.core.task.termination.KillService
-import mesosphere.marathon.core.task.tracker.{ InstanceTracker, TaskStateOpProcessor }
+import mesosphere.marathon.core.task.tracker.{ InstanceCreationHandler, InstanceTracker, TaskStateOpProcessor }
+import mesosphere.marathon.core.task.update.TaskStatusUpdateProcessor
 import mesosphere.marathon.core.task.update.impl.steps._
 import mesosphere.marathon.core.task.update.impl.{ TaskStatusUpdateProcessorImpl, ThrottlingTaskStatusUpdateProcessor }
-import mesosphere.marathon.core.task.update.TaskStatusUpdateProcessor
-import mesosphere.marathon.metrics.Metrics
 import mesosphere.marathon.plugin.auth.{ Authenticator, Authorizer }
 import mesosphere.marathon.plugin.http.HttpRequestHandler
-import mesosphere.marathon.{ MarathonConf, ModuleNames, PrePostDriverCallback }
-import mesosphere.util.{ CapConcurrentExecutions, CapConcurrentExecutionsMetrics }
+import mesosphere.marathon.storage.migration.Migration
+import mesosphere.marathon.storage.repository._
+import mesosphere.marathon.util.WorkQueue
 import org.eclipse.jetty.servlets.EventSourceServlet
 
 import scala.collection.immutable
@@ -70,7 +69,8 @@ class CoreGuiceModule extends AbstractModule {
     leadershipModule: LeadershipModule,
     // makeSureToInitializeThisBeforeCreatingCoordinator
     prerequisite1: TaskStatusUpdateProcessor,
-    prerequisite2: LaunchQueue): LeadershipCoordinator =
+    prerequisite2: LaunchQueue,
+    prerequisite3: DeploymentManager): LeadershipCoordinator =
     leadershipModule.coordinator()
 
   @Provides @Singleton
@@ -123,14 +123,6 @@ class CoreGuiceModule extends AbstractModule {
   def provideLeadershipInitializers(coreModule: CoreModule): immutable.Seq[PrePostDriverCallback] = {
     coreModule.storageModule.leadershipInitializers
   }
-
-  @Provides
-  @Singleton
-  def appRepository(coreModule: CoreModule): ReadOnlyAppRepository = coreModule.storageModule.appRepository
-
-  @Provides
-  @Singleton
-  def podRepository(coreModule: CoreModule): ReadOnlyPodRepository = coreModule.storageModule.podRepository
 
   @Provides
   @Singleton
@@ -207,19 +199,9 @@ class CoreGuiceModule extends AbstractModule {
   }
 
   @Provides @Singleton @Named(ThrottlingTaskStatusUpdateProcessor.dependencyTag)
-  def throttlingTaskStatusUpdateProcessorSerializer(
-    metrics: Metrics,
-    config: MarathonConf,
-    actorRefFactory: ActorRefFactory): CapConcurrentExecutions = {
-    val capMetrics = new CapConcurrentExecutionsMetrics(metrics, classOf[ThrottlingTaskStatusUpdateProcessor])
-
-    CapConcurrentExecutions(
-      capMetrics,
-      actorRefFactory,
-      "serializeTaskStatusUpdates",
-      maxConcurrent = config.internalMaxParallelStatusUpdates(),
-      maxQueued = config.internalMaxQueuedStatusUpdates()
-    )(ExecutionContext.global)
+  def throttlingTaskStatusUpdateProcessorSerializer(config: MarathonConf): WorkQueue = {
+    WorkQueue("TaskStatusUpdates", maxConcurrent = config.internalMaxParallelStatusUpdates(),
+      maxQueueLength = config.internalMaxQueuedStatusUpdates())
   }
 
   @Provides
@@ -246,4 +228,12 @@ class CoreGuiceModule extends AbstractModule {
 
   @Provides @Singleton
   def healthCheckManager(coreModule: CoreModule): HealthCheckManager = coreModule.healthModule.healthCheckManager
+
+  @Provides
+  @Singleton
+  def deploymentManager(coreModule: CoreModule): DeploymentManager = coreModule.deploymentModule.deploymentManager
+
+  @Provides
+  @Singleton
+  def schedulerActions(coreModule: CoreModule): SchedulerActions = coreModule.schedulerActions
 }

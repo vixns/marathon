@@ -1,4 +1,5 @@
-package mesosphere.marathon.core.storage.repository
+package mesosphere.marathon
+package core.storage.repository
 
 import java.time.OffsetDateTime
 
@@ -21,6 +22,15 @@ trait ReadOnlyRepository[Id, T] {
   def ids(): Source[Id, NotUsed]
   def all(): Source[T, NotUsed]
   def get(id: Id): Future[Option[T]]
+}
+
+/**
+  * A repository of that allow read access to the serialization-layer message (T) by (Id)
+  */
+trait RawRepository[Id, T] {
+  def getRaw(id: Id): Future[Option[T]]
+  def allRaw(): Source[T, NotUsed]
+  def storeRaw(t: T): Future[Done]
 }
 
 /**

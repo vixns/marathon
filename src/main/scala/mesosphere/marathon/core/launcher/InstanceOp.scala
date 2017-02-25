@@ -3,7 +3,7 @@ package core.launcher
 
 import mesosphere.marathon.core.instance.Instance
 import mesosphere.marathon.core.instance.update.InstanceUpdateOperation
-import mesosphere.marathon.stream._
+import mesosphere.marathon.stream.Implicits._
 import mesosphere.marathon.tasks.ResourceUtil
 import mesosphere.mesos.ResourceHelpers.DiskRichResource
 import org.apache.mesos.{ Protos => MesosProtos }
@@ -46,7 +46,7 @@ object InstanceOp {
 
     override def applyToOffer(offer: MesosProtos.Offer): MesosProtos.Offer = {
       val taskResources: Seq[MesosProtos.Resource] =
-        groupInfo.getTasksList().flatMap(_.getResourcesList)(collection.breakOut)
+        groupInfo.getTasksList.flatMap(_.getResourcesList)(collection.breakOut)
       val executorResources: Seq[MesosProtos.Resource] = executorInfo.getResourcesList.toSeq
       ResourceUtil.consumeResourcesFromOffer(offer, taskResources ++ executorResources)
     }
@@ -72,7 +72,7 @@ object InstanceOp {
     override lazy val offerOperations: Seq[MesosProtos.Offer.Operation] = {
       val (withDisk, withoutDisk) = resources.partition(_.hasDisk)
       val reservationsForDisks = withDisk.map { resource =>
-        val resourceBuilder = resource.toBuilder()
+        val resourceBuilder = resource.toBuilder
         // If non-root disk resource, we want to clear ALL fields except for the field indicating the disk source.
         resource.getSourceOption match {
           case Some(source) =>

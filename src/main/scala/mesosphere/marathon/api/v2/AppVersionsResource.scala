@@ -1,4 +1,5 @@
-package mesosphere.marathon.api.v2
+package mesosphere.marathon
+package api.v2
 
 import javax.servlet.http.HttpServletRequest
 import javax.ws.rs._
@@ -31,7 +32,7 @@ class AppVersionsResource(
     @PathParam("appId") appId: String,
     @Context req: HttpServletRequest): Response = authenticated(req) { implicit identity =>
     val id = appId.toRootPath
-    withAuthorization(ViewRunSpec, result(groupManager.app(id)), unknownApp(id)) { _ =>
+    withAuthorization(ViewRunSpec, groupManager.app(id), unknownApp(id)) { _ =>
       ok(jsonObjString("versions" -> service.listAppVersions(id)))
     }
   }

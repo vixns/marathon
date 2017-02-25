@@ -3,6 +3,8 @@ uses:
   label: label.raml
   numbers: numberTypes.raml
   volumes: volumes.raml
+  strings: stringTypes.raml
+
 types:
   EngineType:
     type: string
@@ -35,18 +37,11 @@ types:
       value:
         type: string
         description: value of this parameter
-  DockerPortProtocol:
-    type: string
-    enum: [tcp, udp, "udp,tcp"]
-    default: tcp
-    description: |
-      Protocol of the port (one of ['tcp', 'udp'] or 'udp,tcp' for
-      both). Defaults to 'tcp'."
   DockerPortMapping:
     type: object
     properties:
       containerPort:
-        type: numbers.EphemeralPort
+        type: numbers.AnyPort
         description: |
           Refers to the port the application listens to inside of the
           container.
@@ -59,7 +54,7 @@ types:
           private container port which is usually not the same as the
           externally visible host port.
       hostPort?:
-        type: numbers.EphemeralPort
+        type: numbers.AnyPort
         description: |
           Retains the traditional meaning in Marathon, which is a random
           port from the range included in the Mesos resource offer.
@@ -79,10 +74,13 @@ types:
         description:
           Name of the service hosted on this port.
           If provided, it must be unique over all port mappings.
+        pattern: ^[a-z][-a-z0-9]*$
       protocol?:
-        type: DockerPortProtocol
+        type: strings.NetworkProtocol
+        default: tcp
       servicePort?:
-        type: numbers.EphemeralPort
+        type: numbers.AnyPort
+        default: 0
         description: |
           Is a helper port intended for doing service discovery using a
           well-known port per service.
@@ -101,27 +99,44 @@ types:
   DockerContainer:
     type: object
     properties:
-      credential?: DockerCredentials
+      credential?:
+        type: DockerCredentials
+        description: |
+          The credentials to fetch this container.
+          Please note: this property is supported only with the Mesos containerizer, not the docker containerizer.
       forcePullImage?:
         type: boolean
         description: |
           The container will be pulled, regardless if it is already available on
           the local system.
+        default: false
       image:
         type: string
         minLength: 1
         description: The name of the docker image to use
-      network?: DockerNetwork
+      network?:
+        type: DockerNetwork
+        description: |
+          The network mode of this container.
+          Please note: this property is supported only with the docker containerizer, not the Mesos containerizer.
       parameters?:
         type: DockerParameter[]
         description: |
           Allowing arbitrary parameters to be passed to docker CLI.
           Note that anything passed to this field is not guaranteed to be
           supported moving forward, as we might move away from the docker CLI.
-      portMappings?: DockerPortMapping[]
+          Please note: this property is supported only with the docker containerizer, not the Mesos containerizer.
+      portMappings?:
+        type: DockerPortMapping[]
+        description: |
+          The port mappings of this container.
+          Please note: this property is supported only with the docker containerizer, not the Mesos containerizer.
       privileged?:
         type: boolean
-        description: Run this docker image in privileged mode
+        description: |
+          Run this docker image in privileged mode
+          Please note: this property is supported only with the docker containerizer, not the Mesos containerizer.
+        default: false
   AppCContainer:
     type: object
     properties:
@@ -145,6 +160,7 @@ types:
         description: |
           The container will be pulled, regardless if it is already available
           on the local system
+        default: false
   Container:
     type: object
     properties:

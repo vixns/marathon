@@ -12,22 +12,21 @@ import mesosphere.marathon.api.JsonTestHelper
 import mesosphere.marathon.api.serialization.LabelsSerializer
 import mesosphere.marathon.core.base.Clock
 import mesosphere.marathon.core.condition.Condition
+import mesosphere.marathon.core.instance.Instance
 import mesosphere.marathon.core.instance.Instance.InstanceState
 import mesosphere.marathon.core.instance.update.InstanceChangeHandler
-import mesosphere.marathon.core.instance.Instance
 import mesosphere.marathon.core.launcher.impl.{ ReservationLabels, TaskLabels }
 import mesosphere.marathon.core.leadership.LeadershipModule
+import mesosphere.marathon.core.storage.store.impl.memory.InMemoryPersistenceStore
 import mesosphere.marathon.core.task.Task
 import mesosphere.marathon.core.task.tracker.{ InstanceTracker, InstanceTrackerModule }
 import mesosphere.marathon.metrics.Metrics
 import mesosphere.marathon.raml.Resources
-import mesosphere.marathon.state.Container.Docker
-import mesosphere.marathon.state.Container.PortMapping
+import mesosphere.marathon.state.Container.{ Docker, PortMapping }
 import mesosphere.marathon.state.PathId._
 import mesosphere.marathon.state._
-import mesosphere.marathon.storage.repository.legacy.store.{ InMemoryStore, MarathonStore, PersistentStore }
-import mesosphere.marathon.storage.repository.legacy.{ InstanceEntityRepository, TaskEntityRepository }
-import mesosphere.marathon.stream._
+import mesosphere.marathon.storage.repository.InstanceRepository
+import mesosphere.marathon.stream.Implicits._
 import mesosphere.mesos.protos.{ FrameworkID, OfferID, Range, RangesResource, Resource, ScalarResource, SlaveID }
 import mesosphere.util.state.FrameworkId
 import org.apache.mesos.Protos.Resource.{ DiskInfo, ReservationInfo }
@@ -35,6 +34,7 @@ import org.apache.mesos.Protos._
 import org.apache.mesos.{ Protos => Mesos }
 import play.api.libs.json.Json
 
+import scala.concurrent.ExecutionContext
 import scala.util.Random
 
 object MarathonTestHelper {
@@ -80,7 +80,7 @@ object MarathonTestHelper {
 
   def makeBasicOffer(cpus: Double = 4.0, mem: Double = 16000, disk: Double = 1.0,
     beginPort: Int = 31000, endPort: Int = 32000, role: String = ResourceRole.Unreserved,
-    reservation: Option[ReservationLabels] = None): Offer.Builder = {
+    reservation: Option[ReservationLabels] = None, gpus: Double = 0.0): Offer.Builder = {
 
     require(role != ResourceRole.Unreserved || reservation.isEmpty, "reserved resources cannot have role *")
 
@@ -99,6 +99,7 @@ object MarathonTestHelper {
     }
 
     val cpusResource = heedReserved(ScalarResource(Resource.CPUS, cpus, role = role))
+    val gpuResource = heedReserved(ScalarResource(Resource.GPUS, gpus, role = role))
     val memResource = heedReserved(ScalarResource(Resource.MEM, mem, role = role))
     val diskResource = heedReserved(ScalarResource(Resource.DISK, disk, role = role))
     val portsResource = if (beginPort <= endPort) {
@@ -116,6 +117,7 @@ object MarathonTestHelper {
       .setSlaveId(SlaveID("slave0"))
       .setHostname("localhost")
       .addResources(cpusResource)
+      .addResources(gpuResource)
       .addResources(memResource)
       .addResources(diskResource)
 
@@ -312,17 +314,12 @@ object MarathonTestHelper {
 
   def createTaskTrackerModule(
     leadershipModule: LeadershipModule,
-    store: PersistentStore = new InMemoryStore,
+    store: Option[InstanceRepository] = None,
     metrics: Metrics = new Metrics(new MetricRegistry))(implicit mat: Materializer): InstanceTrackerModule = {
 
-    val metrics = new Metrics(new MetricRegistry)
-    val instanceRepo = new InstanceEntityRepository(
-      new MarathonStore[Instance](
-        store = store,
-        metrics = metrics,
-        newState = () => emptyInstance(),
-        prefix = TaskEntityRepository.storePrefix)
-    )(metrics = metrics)
+    implicit val ctx = ExecutionContext.global
+    implicit val m = metrics
+    val instanceRepo = store.getOrElse(InstanceRepository.inMemRepository(new InMemoryPersistenceStore()))
     val updateSteps = Seq.empty[InstanceChangeHandler]
 
     new InstanceTrackerModule(clock, metrics, defaultConfig(), leadershipModule, instanceRepo, updateSteps) {
@@ -336,12 +333,13 @@ object MarathonTestHelper {
     agentInfo = Instance.AgentInfo("", None, Nil),
     state = InstanceState(Condition.Created, since = clock.now(), None, healthy = None),
     tasksMap = Map.empty[Task.Id, Task],
-    runSpecVersion = clock.now()
+    runSpecVersion = clock.now(),
+    UnreachableStrategy.default()
   )
 
   def createTaskTracker(
     leadershipModule: LeadershipModule,
-    store: PersistentStore = new InMemoryStore,
+    store: Option[InstanceRepository] = None,
     metrics: Metrics = new Metrics(new MetricRegistry))(implicit mat: Materializer): InstanceTracker = {
     createTaskTrackerModule(leadershipModule, store, metrics).instanceTracker
   }
@@ -441,28 +439,19 @@ object MarathonTestHelper {
     }
 
     implicit class TaskImprovements(task: Task) {
-      def withAgentInfo(update: Instance.AgentInfo => Instance.AgentInfo): Task = task match {
-        case launchedEphemeral: Task.LaunchedEphemeral =>
-          launchedEphemeral.copy(agentInfo = update(launchedEphemeral.agentInfo))
-
-        case reserved: Task.Reserved =>
-          reserved.copy(agentInfo = update(reserved.agentInfo))
-
-        case launchedOnReservation: Task.LaunchedOnReservation =>
-          launchedOnReservation.copy(agentInfo = update(launchedOnReservation.agentInfo))
+      def withNetworkInfo(networkInfo: core.task.state.NetworkInfo): Task = {
+        val newStatus = task.status.copy(networkInfo = networkInfo)
+        task match {
+          case launchedEphemeral: Task.LaunchedEphemeral => launchedEphemeral.copy(status = newStatus)
+          case launchedOnReservation: Task.LaunchedOnReservation => launchedOnReservation.copy(status = newStatus)
+          case reserved: Task.Reserved => reserved.copy(status = newStatus)
+        }
       }
 
-      def withHostPorts(update: Seq[Int]): Task = task match {
-        case launchedEphemeral: Task.LaunchedEphemeral => launchedEphemeral.copy(hostPorts = update)
-        case launchedOnReservation: Task.LaunchedOnReservation => launchedOnReservation.copy(hostPorts = update)
-        case reserved: Task.Reserved => throw new scala.RuntimeException("Reserved task cannot have hostPorts")
-      }
-
-      def withNetworkInfos(update: scala.collection.Seq[NetworkInfo]): Task = {
+      def withNetworkInfo(hostName: Option[String] = None, hostPorts: Seq[Int] = Nil, networkInfos: scala.collection.Seq[NetworkInfo] = Nil): Task = {
         def containerStatus(networkInfos: scala.collection.Seq[NetworkInfo]) = {
           Mesos.ContainerStatus.newBuilder().addAllNetworkInfos(networkInfos)
         }
-
         def mesosStatus(taskId: Task.Id, mesosStatus: Option[TaskStatus], networkInfos: scala.collection.Seq[NetworkInfo]): Option[TaskStatus] = {
           val taskState = mesosStatus.fold(TaskState.TASK_STAGING)(_.getState)
           Some(mesosStatus.getOrElse(Mesos.TaskStatus.getDefaultInstance).toBuilder
@@ -471,16 +460,14 @@ object MarathonTestHelper {
             .setTaskId(taskId.mesosTaskId)
             .build)
         }
-
-        task match {
-          case launchedEphemeral: Task.LaunchedEphemeral =>
-            val updatedStatus = launchedEphemeral.status.copy(mesosStatus = mesosStatus(task.taskId, launchedEphemeral.mesosStatus, update))
-            launchedEphemeral.copy(status = updatedStatus)
-          case launchedOnReservation: Task.LaunchedOnReservation =>
-            val updatedStatus = launchedOnReservation.status.copy(mesosStatus = mesosStatus(task.taskId, launchedOnReservation.mesosStatus, update))
-            launchedOnReservation.copy(status = updatedStatus)
-          case reserved: Task.Reserved => throw new scala.RuntimeException("Reserved task cannot have status")
-        }
+        val taskStatus = mesosStatus(task.taskId, task.status.mesosStatus, networkInfos)
+        val ipAddresses: Seq[Mesos.NetworkInfo.IPAddress] = networkInfos.flatMap(_.getIpAddressesList)(collection.breakOut)
+        val initialNetworkInfo = core.task.state.NetworkInfo(
+          hostName.getOrElse("host.some"),
+          hostPorts = hostPorts,
+          ipAddresses = ipAddresses)
+        val networkInfo = taskStatus.fold(initialNetworkInfo)(initialNetworkInfo.update)
+        withNetworkInfo(networkInfo).withStatus(_.copy(mesosStatus = taskStatus))
       }
 
       def withStatus[T <: Task](update: Task.Status => Task.Status): T = task match {

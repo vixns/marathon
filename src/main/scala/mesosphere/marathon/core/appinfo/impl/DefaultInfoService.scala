@@ -7,8 +7,7 @@ import mesosphere.marathon.core.group.GroupManager
 import mesosphere.marathon.core.pod.PodDefinition
 import mesosphere.marathon.raml.PodStatus
 import mesosphere.marathon.state._
-import mesosphere.marathon.stream._
-import mesosphere.marathon.storage.repository.{ ReadOnlyAppRepository, ReadOnlyPodRepository }
+import mesosphere.marathon.stream.Implicits._
 import org.slf4j.LoggerFactory
 
 import scala.async.Async.{ async, await }
@@ -18,8 +17,6 @@ import scala.concurrent.Future
 
 private[appinfo] class DefaultInfoService(
     groupManager: GroupManager,
-    appRepository: ReadOnlyAppRepository,
-    podRepository: ReadOnlyPodRepository,
     newBaseData: () => AppInfoBaseData) extends AppInfoService with GroupInfoService with PodStatusService {
   import scala.concurrent.ExecutionContext.Implicits.global
 
@@ -29,7 +26,7 @@ private[appinfo] class DefaultInfoService(
   override def selectPodStatus(id: PathId, selector: PodSelector): Future[Option[PodStatus]] =
     async { // linter:ignore UnnecessaryElseBranch
       log.debug(s"query for pod $id")
-      val maybePod = await(podRepository.get(id))
+      val maybePod = groupManager.pod(id)
       maybePod.filter(selector.matches) match {
         case Some(pod) => Some(await(newBaseData().podStatus(pod)))
         case None => Option.empty[PodStatus]
@@ -38,7 +35,7 @@ private[appinfo] class DefaultInfoService(
 
   override def selectApp(id: PathId, selector: AppSelector, embed: Set[AppInfo.Embed]): Future[Option[AppInfo]] = {
     log.debug(s"queryForAppId $id")
-    appRepository.get(id).flatMap {
+    groupManager.app(id) match {
       case Some(app) if selector.matches(app) => newBaseData().appInfoFuture(app, embed).map(Some(_))
       case None => Future.successful(None)
     }
@@ -48,7 +45,7 @@ private[appinfo] class DefaultInfoService(
   override def selectAppsBy(selector: AppSelector, embed: Set[AppInfo.Embed]): Future[Seq[AppInfo]] =
     async { // linter:ignore UnnecessaryElseBranch
       log.debug("queryAll")
-      val rootGroup = await(groupManager.rootGroup())
+      val rootGroup = groupManager.rootGroup()
       val selectedApps: IndexedSeq[AppDefinition] = rootGroup.transitiveApps.filterAs(selector.matches)(collection.breakOut)
       val infos = await(resolveAppInfos(selectedApps, embed))
       infos
@@ -60,7 +57,7 @@ private[appinfo] class DefaultInfoService(
 
     async { // linter:ignore UnnecessaryElseBranch
       log.debug(s"queryAllInGroup $groupId")
-      val maybeGroup: Option[Group] = await(groupManager.group(groupId))
+      val maybeGroup: Option[Group] = groupManager.group(groupId)
       val maybeApps: Option[IndexedSeq[AppDefinition]] =
         maybeGroup.map(_.transitiveApps.filterAs(selector.matches)(collection.breakOut))
       maybeApps match {
@@ -71,7 +68,7 @@ private[appinfo] class DefaultInfoService(
 
   override def selectGroup(groupId: PathId, selectors: GroupInfoService.Selectors,
     appEmbed: Set[Embed], groupEmbed: Set[GroupInfo.Embed]): Future[Option[GroupInfo]] = {
-    groupManager.group(groupId).flatMap {
+    groupManager.group(groupId) match {
       case Some(group) => queryForGroup(group, selectors, appEmbed, groupEmbed)
       case None => Future.successful(None)
     }
@@ -128,12 +125,14 @@ private[appinfo] class DefaultInfoService(
         def groupMatches(group: Group): Boolean = {
           alreadyMatched.getOrElseUpdate(
             group.id,
-            selectors.groupSelector.matches(group) || group.groups.exists(groupMatches))
+            selectors.groupSelector.matches(group) ||
+              group.groupsById.exists { case (_, group) => groupMatches(group) } ||
+              group.apps.keys.exists(infoById.contains)) || group.pods.keys.exists(statusById.contains)
         }
         if (groupMatches(ref)) {
           val groups: Option[Seq[GroupInfo]] =
             if (groupEmbed(GroupInfo.Embed.Groups))
-              Some(ref.groups.toIndexedSeq.flatMap(queryGroup).sortBy(_.group.id))
+              Some(ref.groupsById.values.toIndexedSeq.flatMap(queryGroup).sortBy(_.group.id))
             else
               None
           val apps: Option[Seq[AppInfo]] =

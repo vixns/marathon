@@ -1,4 +1,5 @@
-package mesosphere.marathon.api.v2.json
+package mesosphere.marathon
+package api.v2.json
 
 import com.wix.accord.Validator
 import com.wix.accord.dsl._
@@ -75,7 +76,11 @@ case class AppUpdate(
 
     residency: Option[Residency] = None,
 
-    secrets: Option[Map[String, Secret]] = None) {
+    secrets: Option[Map[String, Secret]] = None,
+
+    unreachableStrategy: Option[UnreachableStrategy] = None,
+
+    killSelection: Option[KillSelection] = None) {
 
   require(version.isEmpty || onlyVersionOrIdSet, "The 'version' field may only be combined with the 'id' field.")
 
@@ -99,7 +104,8 @@ case class AppUpdate(
       if (residency.isDefined || isResident || externalVolumes.nonEmpty) UpgradeStrategy.forResidentTasks
       else UpgradeStrategy.empty
     val upgradeStrategy = this.upgradeStrategy.getOrElse(defaultUpgradeStrategy)
-    apply(AppDefinition(appId, residency = residency, upgradeStrategy = upgradeStrategy))
+    val unreachableStrategy = this.unreachableStrategy.getOrElse(UnreachableStrategy.default(residency.isDefined))
+    apply(AppDefinition(appId, residency = residency, upgradeStrategy = upgradeStrategy, unreachableStrategy = unreachableStrategy))
   }
 
   /**
@@ -146,7 +152,9 @@ case class AppUpdate(
     versionInfo = app.versionInfo,
     residency = residency.orElse(app.residency),
     secrets = secrets.getOrElse(app.secrets),
-    taskKillGracePeriod = taskKillGracePeriod.orElse(app.taskKillGracePeriod)
+    taskKillGracePeriod = taskKillGracePeriod.orElse(app.taskKillGracePeriod),
+    unreachableStrategy = unreachableStrategy.getOrElse(app.unreachableStrategy),
+    killSelection = killSelection.getOrElse(app.killSelection)
   )
 
   def withCanonizedIds(base: PathId = PathId.empty): AppUpdate = copy(
@@ -161,7 +169,7 @@ object AppUpdate {
       appUp.id is valid
       appUp.dependencies is valid
       appUp.upgradeStrategy is valid
-      appUp.storeUrls is optional(every(urlCanBeResolvedValidator))
+      appUp.storeUrls is optional(every(urlIsValid))
       appUp.portDefinitions is optional(PortDefinitions.portDefinitionsValidator)
       appUp.fetch is optional(every(fetchUriIsValid))
       appUp.container.each is Container.validContainer(enabledFeatures)
@@ -175,5 +183,6 @@ object AppUpdate {
       appUp.secrets is optional(valid(Secret.secretsValidator))
       appUp.secrets is optional(empty) or featureEnabled(enabledFeatures, Features.SECRETS)
       appUp.acceptedResourceRoles is optional(ResourceRole.validAcceptedResourceRoles(appUp.isResident))
+      appUp.unreachableStrategy is optional(valid)
     }
 }

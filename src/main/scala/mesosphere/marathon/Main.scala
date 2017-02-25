@@ -8,10 +8,12 @@ import com.typesafe.scalalogging.StrictLogging
 import mesosphere.chaos.http.{ HttpModule, HttpService }
 import mesosphere.chaos.metrics.MetricsModule
 import mesosphere.marathon.api.MarathonRestModule
+import mesosphere.marathon.core.base._
 import mesosphere.marathon.core.CoreGuiceModule
 import mesosphere.marathon.core.base.toRichRuntime
 import mesosphere.marathon.metrics.{ MetricsReporterModule, MetricsReporterService }
-import mesosphere.marathon.stream._
+import mesosphere.marathon.stream.Implicits._
+import mesosphere.mesos.LibMesos
 import org.slf4j.LoggerFactory
 import org.slf4j.bridge.SLF4JBridgeHandler
 
@@ -20,7 +22,6 @@ import scala.concurrent.ExecutionContext
 class MarathonApp(args: Seq[String]) extends AutoCloseable with StrictLogging {
   private var running = false
   private val log = LoggerFactory.getLogger(getClass.getName)
-  val conf = new AllConf(args)
 
   SLF4JBridgeHandler.removeHandlersForRootLogger()
   SLF4JBridgeHandler.install()
@@ -44,11 +45,31 @@ class MarathonApp(args: Seq[String]) extends AutoCloseable with StrictLogging {
   }
   private var serviceManager: Option[ServiceManager] = None
 
+  private val EnvPrefix = "MARATHON_CMD_"
+  private lazy val envArgs: Array[String] = {
+    sys.env.withFilter(_._1.startsWith(EnvPrefix)).flatMap {
+      case (key, value) =>
+        val argKey = s"--${key.replaceFirst(EnvPrefix, "").toLowerCase.trim}"
+        if (value.trim.length > 0) Seq(argKey, value) else Seq(argKey)
+    }(collection.breakOut)
+  }
+
+  val conf = {
+    new AllConf(args ++ envArgs)
+  }
+
   def start(): Unit = if (!running) {
     running = true
     setConcurrentContextDefaults()
 
     log.info(s"Starting Marathon ${BuildInfo.version}/${BuildInfo.buildref} with ${args.mkString(" ")}")
+
+    if (LibMesos.isCompatible) {
+      log.info(s"Successfully loaded libmesos: version ${LibMesos.version}")
+    } else {
+      log.error(s"Failed to load libmesos: ${LibMesos.version}")
+      System.exit(1)
+    }
 
     val injector = Guice.createInjector(modules)
     val services = Seq(

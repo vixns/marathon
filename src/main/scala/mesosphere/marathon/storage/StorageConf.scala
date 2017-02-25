@@ -1,13 +1,14 @@
-package mesosphere.marathon.storage
+package mesosphere.marathon
+package storage
 
 import mesosphere.marathon.ZookeeperConf
 
 trait StorageConf extends ZookeeperConf {
   lazy val internalStoreBackend = opt[String](
     "internal_store_backend",
-    descr = s"The backend storage system to use. One of ${TwitterZk.StoreName}, ${MesosZk.StoreName}, ${InMem.StoreName}, ${CuratorZk.StoreName}",
+    descr = s"The backend storage system to use. One of ${InMem.StoreName}, ${CuratorZk.StoreName}",
     hidden = true,
-    validate = Set(TwitterZk.StoreName, MesosZk.StoreName, InMem.StoreName, CuratorZk.StoreName).contains,
+    validate = Set(InMem.StoreName, CuratorZk.StoreName).contains,
     default = Some(CuratorZk.StoreName)
   )
 
@@ -41,4 +42,6 @@ trait StorageConf extends ZookeeperConf {
     descrYes = "(Default) Enable an additional layer of caching for object versions when store_cache is enabled.",
     prefix = "disable_"
   )
+
+  def availableFeatures: Set[String]
 }

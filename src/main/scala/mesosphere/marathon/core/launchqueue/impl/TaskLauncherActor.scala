@@ -1,6 +1,7 @@
 package mesosphere.marathon
 package core.launchqueue.impl
 
+import akka.Done
 import akka.actor._
 import akka.event.LoggingReceive
 import mesosphere.marathon.core.base.Clock
@@ -19,8 +20,9 @@ import mesosphere.marathon.core.matcher.manager.OfferMatcherManager
 import mesosphere.marathon.core.task.tracker.InstanceTracker
 import mesosphere.marathon.state.{ RunSpec, Timestamp }
 import org.apache.mesos.{ Protos => Mesos }
-import mesosphere.marathon.stream._
+import mesosphere.marathon.stream.Implicits._
 
+import scala.concurrent.Promise
 import scala.concurrent.duration._
 
 private[launchqueue] object TaskLauncherActor {
@@ -31,7 +33,8 @@ private[launchqueue] object TaskLauncherActor {
     taskOpFactory: InstanceOpFactory,
     maybeOfferReviver: Option[OfferReviver],
     instanceTracker: InstanceTracker,
-    rateLimiterActor: ActorRef)(
+    rateLimiterActor: ActorRef,
+    offerMatchStatisticsActor: ActorRef)(
     runSpec: RunSpec,
     initialCount: Int): Props = {
     Props(new TaskLauncherActor(
@@ -39,7 +42,7 @@ private[launchqueue] object TaskLauncherActor {
       offerMatcherManager,
       clock, taskOpFactory,
       maybeOfferReviver,
-      instanceTracker, rateLimiterActor,
+      instanceTracker, rateLimiterActor, offerMatchStatisticsActor,
       runSpec, initialCount))
   }
 
@@ -79,6 +82,7 @@ private class TaskLauncherActor(
     maybeOfferReviver: Option[OfferReviver],
     instanceTracker: InstanceTracker,
     rateLimiterActor: ActorRef,
+    offerMatchStatisticsActor: ActorRef,
 
     private[this] var runSpec: RunSpec,
     private[this] var instancesToLaunch: Int) extends Actor with ActorLogging with Stash {
@@ -116,6 +120,8 @@ private class TaskLauncherActor(
       log.warning("Actor shutdown while instances are in flight: {}", inFlightInstanceOperations.keys.mkString(", "))
       inFlightInstanceOperations.values.foreach(_.cancel())
     }
+
+    offerMatchStatisticsActor ! OfferMatchStatisticsActor.LaunchFinished(runSpec.id)
 
     super.postStop()
 
@@ -230,7 +236,7 @@ private class TaskLauncherActor(
   private[this] def receiveTaskLaunchNotification: Receive = {
     case InstanceOpSourceDelegate.InstanceOpRejected(op, reason) if inFlight(op) =>
       removeInstance(op.instanceId)
-      log.info(
+      log.debug(
         "Task op '{}' for {} was REJECTED, reason '{}', rescheduling. {}",
         op.getClass.getSimpleName, op.instanceId, reason, status)
 
@@ -251,18 +257,18 @@ private class TaskLauncherActor(
       log.debug("Ignoring task launch rejected for '{}' as the task is not in flight anymore", op.instanceId)
 
     case InstanceOpSourceDelegate.InstanceOpRejected(op, reason) =>
-      log.warning("Unexpected task op '{}' rejected for {}.", op.getClass.getSimpleName, op.instanceId)
+      log.warning("Unexpected task op '{}' rejected for {} with reason {}", op.getClass.getSimpleName, op.instanceId, reason)
 
     case InstanceOpSourceDelegate.InstanceOpAccepted(op) =>
       inFlightInstanceOperations -= op.instanceId
-      log.info("Task op '{}' for {} was accepted. {}", op.getClass.getSimpleName, op.instanceId, status)
+      log.debug("Task op '{}' for {} was accepted. {}", op.getClass.getSimpleName, op.instanceId, status)
   }
 
   private[this] def receiveInstanceUpdate: Receive = {
     case change: InstanceChange =>
       change match {
         case update: InstanceUpdated =>
-          log.info("receiveInstanceUpdate: {} is {}", update.id, update.condition)
+          log.debug("receiveInstanceUpdate: {} is {}", update.id, update.condition)
           instanceMap += update.id -> update.instance
 
         case update: InstanceDeleted =>
@@ -278,7 +284,7 @@ private class TaskLauncherActor(
             maybeOfferReviver.foreach(_.reviveOffers())
           }
       }
-      replyWithQueuedInstanceCount()
+      sender() ! Done
   }
 
   private[this] def removeInstance(instanceId: Instance.Id): Unit = {
@@ -314,6 +320,7 @@ private class TaskLauncherActor(
           )
         }
       } else {
+        log.info("add {} instances to {} instances to launch", addCount, instancesToLaunch)
         instancesToLaunch += addCount
       }
 
@@ -342,30 +349,39 @@ private class TaskLauncherActor(
       inProgress = instancesToLaunch > 0 || inFlightInstanceOperations.nonEmpty,
       instancesLeftToLaunch = instancesToLaunch,
       finalInstanceCount = instancesToLaunch + instancesLaunchesInFlight + instancesLaunched,
-      unreachableInstances = instanceMap.values.count(instance => instance.isUnreachable),
       backOffUntil.getOrElse(clock.now()),
       startedAt
     )
   }
 
   private[this] def receiveProcessOffers: Receive = {
-    case ActorOfferMatcher.MatchOffer(deadline, offer) if clock.now() >= deadline || !shouldLaunchInstances =>
+    case ActorOfferMatcher.MatchOffer(deadline, offer, promise) if clock.now() >= deadline || !shouldLaunchInstances =>
       val deadlineReached = clock.now() >= deadline
       log.debug("ignoring offer, offer deadline {}reached. {}", if (deadlineReached) "" else "NOT ", status)
-      sender ! MatchedInstanceOps(offer.getId)
+      promise.trySuccess(MatchedInstanceOps.noMatch(offer.getId))
 
-    case ActorOfferMatcher.MatchOffer(deadline, offer) =>
-      val reachableInstances: Seq[Instance] = instanceMap.values.filterNotAs(_.state.condition.isLost)(collection.breakOut)
+    case ActorOfferMatcher.MatchOffer(deadline, offer, promise) =>
+      val reachableInstances = instanceMap.filterNotAs{ case (_, instance) => instance.state.condition.isLost }
       val matchRequest = InstanceOpFactory.Request(runSpec, offer, reachableInstances, instancesToLaunch)
       instanceOpFactory.matchOfferRequest(matchRequest) match {
-        case OfferMatchResult.Match(_, _, instanceOp, _) => handleInstanceOp(instanceOp, offer)
+        case matched: OfferMatchResult.Match =>
+          offerMatchStatisticsActor ! matched
+          handleInstanceOp(matched.instanceOp, offer, promise)
         case notMatched: OfferMatchResult.NoMatch =>
-          //TODO(REJECTED): send accumulator an update
-          sender() ! MatchedInstanceOps(offer.getId)
+          offerMatchStatisticsActor ! notMatched
+          promise.trySuccess(MatchedInstanceOps.noMatch(offer.getId))
       }
   }
 
-  private[this] def handleInstanceOp(instanceOp: InstanceOp, offer: Mesos.Offer): Unit = {
+  /**
+    * Mutate internal state in response to having matched an instanceOp.
+    *
+    * @param instanceOp The instanceOp that is to be applied to on a previously
+    *     received offer
+    * @param offer The offer that could be matched successfully.
+    * @param promise Promise that tells offer matcher that the offer has been accepted.
+    */
+  private[this] def handleInstanceOp(instanceOp: InstanceOp, offer: Mesos.Offer, promise: Promise[MatchedInstanceOps]): Unit = {
     def updateActorState(): Unit = {
       val instanceId = instanceOp.instanceId
       instanceOp match {
@@ -403,11 +419,11 @@ private class TaskLauncherActor(
 
     updateActorState()
 
-    log.info(
+    log.debug(
       "Request {} for instance '{}', version '{}'. {}",
       instanceOp.getClass.getSimpleName, instanceOp.instanceId.idString, runSpec.version, status)
 
-    sender() ! MatchedInstanceOps(offer.getId, Seq(InstanceOpWithSource(myselfAsLaunchSource, instanceOp)))
+    promise.trySuccess(MatchedInstanceOps(offer.getId, Seq(InstanceOpWithSource(myselfAsLaunchSource, instanceOp))))
   }
 
   private[this] def scheduleTaskOpTimeout(instanceOp: InstanceOp): Unit = {
@@ -449,7 +465,7 @@ private class TaskLauncherActor(
   private[this] object OfferMatcherRegistration {
     private[this] val myselfAsOfferMatcher: OfferMatcher = {
       //set the precedence only, if this app is resident
-      new ActorOfferMatcher(clock, self, runSpec.residency.map(_ => runSpec.id))
+      new ActorOfferMatcher(self, runSpec.residency.map(_ => runSpec.id))(context.system.scheduler)
     }
     private[this] var registeredAsMatcher = false
 

@@ -8,9 +8,10 @@ import mesosphere.marathon.core.task.Task
 import mesosphere.marathon.plugin.task.RunSpecTaskProcessor
 import mesosphere.marathon.plugin.{ ApplicationSpec, PodSpec }
 import mesosphere.marathon.raml
+import mesosphere.marathon.raml.Resources
 import mesosphere.marathon.state.PathId._
 import mesosphere.marathon.state.{ Command, EnvVarString, ResourceRole }
-import mesosphere.marathon.stream._
+import mesosphere.marathon.stream.Implicits._
 import mesosphere.marathon.test.MarathonTestHelper
 import org.apache.mesos.Protos.{ ExecutorInfo, TaskGroupInfo, TaskInfo }
 import org.apache.mesos.{ Protos => mesos }
@@ -27,25 +28,25 @@ class TaskGroupBuilderTest extends UnitTest {
     "build from a PodDefinition with a single container" in {
       val offer = MarathonTestHelper.makeBasicOffer(cpus = 1.1, mem = 160.0, disk = 10.0).build
 
-      val pod = TaskGroupBuilder.build(
-        PodDefinition(
-          id = "/product/frontend".toPath,
-          containers = List(
-            MesosContainer(
-              name = "Foo",
-              exec = None,
-              resources = raml.Resources(cpus = 1.0f, mem = 128.0f)
-            )
+      val podSpec = PodDefinition(
+        id = "/product/frontend".toPath,
+        containers = Seq(
+          MesosContainer(
+            name = "Foo",
+            exec = None,
+            resources = raml.Resources(cpus = 1.0f, mem = 128.0f)
           )
-        ),
+        )
+      )
+      val resourceMatch = RunSpecOfferMatcher.matchOffer(podSpec, offer, Seq.empty, defaultBuilderConfig.acceptedResourceRoles)
+      val (_, taskGroupInfo, _, _) = TaskGroupBuilder.build(
+        podSpec,
         offer,
         s => Instance.Id.forRunSpec(s),
-        defaultBuilderConfig
-      )(Seq.empty)
-
-      assert(pod.isDefined)
-
-      val (_, taskGroupInfo, _, _) = pod.get
+        defaultBuilderConfig,
+        RunSpecTaskProcessor.empty,
+        resourceMatch.asInstanceOf[ResourceMatchResponse.Match].resourceMatch
+      )
 
       assert(taskGroupInfo.getTasksList.exists(_.getName == "Foo"))
     }
@@ -53,32 +54,32 @@ class TaskGroupBuilderTest extends UnitTest {
     "build from a PodDefinition with multiple containers" in {
       val offer = MarathonTestHelper.makeBasicOffer(cpus = 4.1, mem = 1056.0, disk = 10.0).build
 
-      val pod = TaskGroupBuilder.build(
-        PodDefinition(
-          id = "/product/frontend".toPath,
-          containers = List(
-            MesosContainer(
-              name = "Foo",
-              resources = raml.Resources(cpus = 1.0f, mem = 512.0f)
-            ),
-            MesosContainer(
-              name = "Foo2",
-              resources = raml.Resources(cpus = 2.0f, mem = 256.0f)
-            ),
-            MesosContainer(
-              name = "Foo3",
-              resources = raml.Resources(cpus = 1.0f, mem = 256.0f)
-            )
+      val podSpec = PodDefinition(
+        id = "/product/frontend".toPath,
+        containers = Seq(
+          MesosContainer(
+            name = "Foo",
+            resources = raml.Resources(cpus = 1.0f, mem = 512.0f)
+          ),
+          MesosContainer(
+            name = "Foo2",
+            resources = raml.Resources(cpus = 2.0f, mem = 256.0f)
+          ),
+          MesosContainer(
+            name = "Foo3",
+            resources = raml.Resources(cpus = 1.0f, mem = 256.0f)
           )
-        ),
+        )
+      )
+      val resourceMatch = RunSpecOfferMatcher.matchOffer(podSpec, offer, Seq.empty, defaultBuilderConfig.acceptedResourceRoles)
+      val (_, taskGroupInfo, _, _) = TaskGroupBuilder.build(
+        podSpec,
         offer,
         s => Instance.Id.forRunSpec(s),
-        defaultBuilderConfig
-      )(Seq.empty)
-
-      assert(pod.isDefined)
-
-      val (_, taskGroupInfo, _, _) = pod.get
+        defaultBuilderConfig,
+        RunSpecTaskProcessor.empty,
+        resourceMatch.asInstanceOf[ResourceMatchResponse.Match].resourceMatch
+      )
 
       assert(taskGroupInfo.getTasksCount == 3)
     }
@@ -86,35 +87,37 @@ class TaskGroupBuilderTest extends UnitTest {
     "set container commands from a MesosContainer definition" in {
       val offer = MarathonTestHelper.makeBasicOffer(cpus = 3.1, mem = 416.0, disk = 10.0).build
 
-      val pod = TaskGroupBuilder.build(
-        PodDefinition(
-          id = "/product/frontend".toPath,
-          containers = List(
-            MesosContainer(
-              name = "Foo1",
-              exec = Some(raml.MesosExec(raml.ShellCommand("foo"))),
-              resources = raml.Resources(cpus = 1.0f, mem = 128.0f)
-            ),
-            MesosContainer(
-              name = "Foo2",
-              exec = Some(raml.MesosExec(raml.ArgvCommand(List("foo", "arg1", "arg2")))),
-              resources = raml.Resources(cpus = 1.0f, mem = 128.0f)
-            ),
-            MesosContainer(
-              name = "Foo3",
-              exec = Some(raml.MesosExec(raml.ArgvCommand(List("foo", "arg1", "arg2")), Some(true))),
-              resources = raml.Resources(cpus = 1.0f, mem = 128.0f)
-            )
+      val podSpec = PodDefinition(
+        id = "/product/frontend".toPath,
+        containers = Seq(
+          MesosContainer(
+            name = "Foo1",
+            exec = Some(raml.MesosExec(raml.ShellCommand("foo"))),
+            resources = raml.Resources(cpus = 1.0f, mem = 128.0f)
+          ),
+          MesosContainer(
+            name = "Foo2",
+            exec = Some(raml.MesosExec(raml.ArgvCommand(Seq("foo", "arg1", "arg2")))),
+            resources = raml.Resources(cpus = 1.0f, mem = 128.0f)
+          ),
+          MesosContainer(
+            name = "Foo3",
+            exec = Some(raml.MesosExec(raml.ArgvCommand(Seq("foo", "arg1", "arg2")), Some(true))),
+            resources = raml.Resources(cpus = 1.0f, mem = 128.0f)
           )
-        ),
+        )
+      )
+
+      val resourceMatch = RunSpecOfferMatcher.matchOffer(podSpec, offer, Seq.empty, defaultBuilderConfig.acceptedResourceRoles)
+
+      val (_, taskGroupInfo, _, _) = TaskGroupBuilder.build(
+        podSpec,
         offer,
         s => Instance.Id.forRunSpec(s),
-        defaultBuilderConfig
-      )(Seq.empty)
-
-      assert(pod.isDefined)
-
-      val (_, taskGroupInfo, _, _) = pod.get
+        defaultBuilderConfig,
+        RunSpecTaskProcessor.empty,
+        resourceMatch.asInstanceOf[ResourceMatchResponse.Match].resourceMatch
+      )
 
       assert(taskGroupInfo.getTasksCount == 3)
 
@@ -146,30 +149,32 @@ class TaskGroupBuilderTest extends UnitTest {
     "override pod user values with ones defined in containers" in {
       val offer = MarathonTestHelper.makeBasicOffer(cpus = 4.1, mem = 1056.0, disk = 10.0).build
 
-      val pod = TaskGroupBuilder.build(
-        PodDefinition(
-          id = "/product/frontend".toPath,
-          containers = List(
-            MesosContainer(
-              name = "Foo1",
-              resources = raml.Resources(cpus = 2.0f, mem = 512.0f)
-            ),
-            MesosContainer(
-              name = "Foo2",
-              resources = raml.Resources(cpus = 2.0f, mem = 512.0f),
-              user = Some("admin")
-            )
+      val podSpec = PodDefinition(
+        id = "/product/frontend".toPath,
+        containers = Seq(
+          MesosContainer(
+            name = "Foo1",
+            resources = raml.Resources(cpus = 2.0f, mem = 512.0f)
           ),
-          user = Some("user")
+          MesosContainer(
+            name = "Foo2",
+            resources = raml.Resources(cpus = 2.0f, mem = 512.0f),
+            user = Some("admin")
+          )
         ),
+        user = Some("user")
+      )
+
+      val resourceMatch = RunSpecOfferMatcher.matchOffer(podSpec, offer, Seq.empty, defaultBuilderConfig.acceptedResourceRoles)
+
+      val (_, taskGroupInfo, _, _) = TaskGroupBuilder.build(
+        podSpec,
         offer,
         s => Instance.Id.forRunSpec(s),
-        defaultBuilderConfig
-      )(Seq.empty)
-
-      assert(pod.isDefined)
-
-      val (_, taskGroupInfo, _, _) = pod.get
+        defaultBuilderConfig,
+        RunSpecTaskProcessor.empty,
+        resourceMatch.asInstanceOf[ResourceMatchResponse.Match].resourceMatch
+      )
 
       assert(taskGroupInfo.getTasksCount == 2)
 
@@ -180,31 +185,33 @@ class TaskGroupBuilderTest extends UnitTest {
     "set pod labels and container labels" in {
       val offer = MarathonTestHelper.makeBasicOffer(cpus = 4.1, mem = 1056.0, disk = 10.0).build
 
-      val pod = TaskGroupBuilder.build(
-        PodDefinition(
-          id = "/product/frontend".toPath,
-          containers = List(
-            MesosContainer(
-              name = "Foo1",
-              resources = raml.Resources(cpus = 2.0f, mem = 512.0f),
-              labels = Map("b" -> "c")
-            ),
-            MesosContainer(
-              name = "Foo2",
-              resources = raml.Resources(cpus = 2.0f, mem = 512.0f),
-              labels = Map("c" -> "c")
-            )
+      val podSpec = PodDefinition(
+        id = "/product/frontend".toPath,
+        containers = Seq(
+          MesosContainer(
+            name = "Foo1",
+            resources = raml.Resources(cpus = 2.0f, mem = 512.0f),
+            labels = Map("b" -> "c")
           ),
-          labels = Map("a" -> "a", "b" -> "b")
+          MesosContainer(
+            name = "Foo2",
+            resources = raml.Resources(cpus = 2.0f, mem = 512.0f),
+            labels = Map("c" -> "c")
+          )
         ),
+        labels = Map("a" -> "a", "b" -> "b")
+      )
+
+      val resourceMatch = RunSpecOfferMatcher.matchOffer(podSpec, offer, Seq.empty, defaultBuilderConfig.acceptedResourceRoles)
+
+      val (executorInfo, taskGroupInfo, _, _) = TaskGroupBuilder.build(
+        podSpec,
         offer,
         s => Instance.Id.forRunSpec(s),
-        defaultBuilderConfig
-      )(Seq.empty)
-
-      assert(pod.isDefined)
-
-      val (executorInfo, taskGroupInfo, _, _) = pod.get
+        defaultBuilderConfig,
+        RunSpecTaskProcessor.empty,
+        resourceMatch.asInstanceOf[ResourceMatchResponse.Match].resourceMatch
+      )
 
       assert(executorInfo.hasLabels)
 
@@ -242,20 +249,23 @@ class TaskGroupBuilderTest extends UnitTest {
         resources = raml.Resources(cpus = 2.0f, mem = 512.0f, disk = 0.0f)
       )
 
-      val pod = TaskGroupBuilder.build(
-        PodDefinition(
-          id = instanceIdStr.toPath,
-          containers = List(
-            mesosContainer
-          )
-        ),
+      val podSpec = PodDefinition(
+        id = instanceIdStr.toPath,
+        containers = Seq(
+          mesosContainer
+        )
+      )
+
+      val resourceMatch = RunSpecOfferMatcher.matchOffer(podSpec, offer, Seq.empty, defaultBuilderConfig.acceptedResourceRoles)
+
+      val (_, taskGroupInfo, _, instanceId) = TaskGroupBuilder.build(
+        podSpec,
         offer,
         s => Instance.Id.forRunSpec(s),
-        defaultBuilderConfig
-      )(Seq.empty)
-
-      assert(pod.isDefined)
-      val (_, taskGroupInfo, _, instanceId) = pod.get
+        defaultBuilderConfig,
+        RunSpecTaskProcessor.empty,
+        resourceMatch.asInstanceOf[ResourceMatchResponse.Match].resourceMatch
+      )
 
       assert(taskGroupInfo.getTasksCount == 1)
 
@@ -276,33 +286,35 @@ class TaskGroupBuilderTest extends UnitTest {
     "set environment variables and make sure that container variables override pod variables" in {
       val offer = MarathonTestHelper.makeBasicOffer(cpus = 4.1, mem = 1056.0, disk = 10.0).build
 
-      val pod = TaskGroupBuilder.build(
-        PodDefinition(
-          id = "/product/frontend".toPath,
-          containers = List(
-            MesosContainer(
-              name = "Foo1",
-              resources = raml.Resources(cpus = 2.0f, mem = 512.0f),
-              env = Map("b" -> EnvVarString("c"))
-            ),
-            MesosContainer(
-              name = "Foo2",
-              resources = raml.Resources(cpus = 2.0f, mem = 512.0f),
-              env = Map("c" -> EnvVarString("c")),
-              labels = Map("b" -> "b")
-            )
+      val podSpec = PodDefinition(
+        id = "/product/frontend".toPath,
+        containers = Seq(
+          MesosContainer(
+            name = "Foo1",
+            resources = raml.Resources(cpus = 2.0f, mem = 512.0f),
+            env = Map("b" -> EnvVarString("c"))
           ),
-          env = Map("a" -> EnvVarString("a"), "b" -> EnvVarString("b")),
-          labels = Map("a" -> "a")
+          MesosContainer(
+            name = "Foo2",
+            resources = raml.Resources(cpus = 2.0f, mem = 512.0f),
+            env = Map("c" -> EnvVarString("c")),
+            labels = Map("b" -> "b")
+          )
         ),
+        env = Map("a" -> EnvVarString("a"), "b" -> EnvVarString("b")),
+        labels = Map("a" -> "a")
+      )
+
+      val resourceMatch = RunSpecOfferMatcher.matchOffer(podSpec, offer, Seq.empty, defaultBuilderConfig.acceptedResourceRoles)
+
+      val (_, taskGroupInfo, _, _) = TaskGroupBuilder.build(
+        podSpec,
         offer,
         s => Instance.Id.forRunSpec(s),
-        defaultBuilderConfig
-      )(Seq.empty)
-
-      assert(pod.isDefined)
-
-      val (_, taskGroupInfo, _, _) = pod.get
+        defaultBuilderConfig,
+        RunSpecTaskProcessor.empty,
+        resourceMatch.asInstanceOf[ResourceMatchResponse.Match].resourceMatch
+      )
 
       assert(taskGroupInfo.getTasksCount == 2)
 
@@ -342,55 +354,57 @@ class TaskGroupBuilderTest extends UnitTest {
     "create volume mappings between volumes defined for a pod and container mounts" in {
       val offer = MarathonTestHelper.makeBasicOffer(cpus = 4.1, mem = 1056.0, disk = 10.0).build
 
-      val pod = TaskGroupBuilder.build(
-        PodDefinition(
-          id = "/product/frontend".toPath,
-          containers = List(
-            MesosContainer(
-              name = "Foo1",
-              resources = raml.Resources(cpus = 2.0f, mem = 512.0f),
-              volumeMounts = List(
-                raml.VolumeMount(
-                  name = "volume1",
-                  mountPath = "/mnt/path1"
-                ),
-                raml.VolumeMount(
-                  name = "volume2",
-                  mountPath = "/mnt/path2",
-                  readOnly = Some(true)
-                )
-              )
-            ),
-            MesosContainer(
-              name = "Foo2",
-              resources = raml.Resources(cpus = 2.0f, mem = 512.0f),
-              volumeMounts = List(
-                raml.VolumeMount(
-                  name = "volume1",
-                  mountPath = "/mnt/path2",
-                  readOnly = Some(false)
-                )
+      val podSpec = PodDefinition(
+        id = "/product/frontend".toPath,
+        containers = Seq(
+          MesosContainer(
+            name = "Foo1",
+            resources = raml.Resources(cpus = 2.0f, mem = 512.0f),
+            volumeMounts = Seq(
+              raml.VolumeMount(
+                name = "volume1",
+                mountPath = "/mnt/path1"
+              ),
+              raml.VolumeMount(
+                name = "volume2",
+                mountPath = "/mnt/path2",
+                readOnly = Some(true)
               )
             )
           ),
-          podVolumes = List(
-            HostVolume(
-              name = "volume1",
-              hostPath = "/mnt/path1"
-            ),
-            EphemeralVolume(
-              name = "volume2"
+          MesosContainer(
+            name = "Foo2",
+            resources = raml.Resources(cpus = 2.0f, mem = 512.0f),
+            volumeMounts = Seq(
+              raml.VolumeMount(
+                name = "volume1",
+                mountPath = "/mnt/path2",
+                readOnly = Some(false)
+              )
             )
           )
         ),
+        podVolumes = Seq(
+          HostVolume(
+            name = "volume1",
+            hostPath = "/mnt/path1"
+          ),
+          EphemeralVolume(
+            name = "volume2"
+          )
+        )
+      )
+
+      val resourceMatch = RunSpecOfferMatcher.matchOffer(podSpec, offer, Seq.empty, defaultBuilderConfig.acceptedResourceRoles)
+
+      val (_, taskGroupInfo, _, _) = TaskGroupBuilder.build(
+        podSpec,
         offer,
         s => Instance.Id.forRunSpec(s),
-        defaultBuilderConfig
-      )(Seq.empty)
-
-      assert(pod.isDefined)
-
-      val (_, taskGroupInfo, _, _) = pod.get
+        defaultBuilderConfig,
+        RunSpecTaskProcessor.empty,
+        resourceMatch.asInstanceOf[ResourceMatchResponse.Match].resourceMatch
+      )
 
       assert(taskGroupInfo.getTasksCount == 2)
 
@@ -415,43 +429,45 @@ class TaskGroupBuilderTest extends UnitTest {
     "set container images from an image definition" in {
       val offer = MarathonTestHelper.makeBasicOffer(cpus = 6.1, mem = 1568.0, disk = 10.0).build
 
-      val pod = TaskGroupBuilder.build(
-        PodDefinition(
-          id = "/product/frontend".toPath,
-          containers = List(
-            MesosContainer(
-              name = "Foo1",
-              resources = raml.Resources(cpus = 2.0f, mem = 512.0f),
-              image = Some(
-                raml.Image(
-                  kind = raml.ImageType.Docker,
-                  id = "alpine",
-                  forcePull = Some(true)
-                ))
-            ),
-            MesosContainer(
-              name = "Foo2",
-              resources = raml.Resources(cpus = 2.0f, mem = 512.0f),
-              image = Some(
-                raml.Image(
-                  kind = raml.ImageType.Appc,
-                  id = "alpine"
-                ))
-            ),
-            MesosContainer(
-              name = "Foo3",
-              resources = raml.Resources(cpus = 2.0f, mem = 512.0f)
-            )
+      val podSpec = PodDefinition(
+        id = "/product/frontend".toPath,
+        containers = Seq(
+          MesosContainer(
+            name = "Foo1",
+            resources = raml.Resources(cpus = 2.0f, mem = 512.0f),
+            image = Some(
+              raml.Image(
+                kind = raml.ImageType.Docker,
+                id = "alpine",
+                forcePull = Some(true)
+              ))
+          ),
+          MesosContainer(
+            name = "Foo2",
+            resources = raml.Resources(cpus = 2.0f, mem = 512.0f),
+            labels = Map("foo" -> "bla"),
+            image = Some(
+              raml.Image(
+                kind = raml.ImageType.Appc,
+                id = "alpine"
+              ))
+          ),
+          MesosContainer(
+            name = "Foo3",
+            resources = raml.Resources(cpus = 2.0f, mem = 512.0f)
           )
-        ),
+        )
+      )
+      val resourceMatch = RunSpecOfferMatcher.matchOffer(podSpec, offer, Seq.empty, defaultBuilderConfig.acceptedResourceRoles)
+
+      val (_, taskGroupInfo, _, _) = TaskGroupBuilder.build(
+        podSpec,
         offer,
         s => Instance.Id.forRunSpec(s),
-        defaultBuilderConfig
-      )(Seq.empty)
-
-      assert(pod.isDefined)
-
-      val (_, taskGroupInfo, _, _) = pod.get
+        defaultBuilderConfig,
+        RunSpecTaskProcessor.empty,
+        resourceMatch.asInstanceOf[ResourceMatchResponse.Match].resourceMatch
+      )
 
       assert(taskGroupInfo.getTasksCount == 3)
 
@@ -469,6 +485,8 @@ class TaskGroupBuilderTest extends UnitTest {
       assert(task2Container.getType == mesos.ContainerInfo.Type.MESOS)
       assert(task2Container.getMesos.getImage.getType == mesos.Image.Type.APPC)
       assert(task2Container.getMesos.getImage.getAppc.getName == "alpine")
+      val appcImageLabels = task2Container.getMesos.getImage.getAppc.getLabels.getLabelsList.map(l => l.getKey -> l.getValue).toMap
+      assert(appcImageLabels == TaskGroupBuilder.LinuxAmd64 ++ Map("foo" -> "bla"))
 
       val task3 = taskGroupInfo
         .getTasksList.find(_.getName == "Foo3").get
@@ -479,48 +497,50 @@ class TaskGroupBuilderTest extends UnitTest {
     "create health check definitions with host-mode networking" in {
       val offer = MarathonTestHelper.makeBasicOffer(cpus = 3.1, mem = 416.0, disk = 10.0, beginPort = 1200, endPort = 1300).build
 
-      val pod = TaskGroupBuilder.build(
-        PodDefinition(
-          id = "/product/frontend".toPath,
-          networks = Seq(HostNetwork),
-          containers = List(
-            MesosContainer(
-              name = "Foo1",
-              resources = raml.Resources(cpus = 1.0f, mem = 128.0f),
-              healthCheck = Some(MesosHttpHealthCheck(portIndex = Some(PortReference("foo1")), path = Some("healthcheck"))),
-              endpoints = List(
-                raml.Endpoint(
-                  name = "foo1",
-                  hostPort = Some(1234)
-                )
+      val podSpec = PodDefinition(
+        id = "/product/frontend".toPath,
+        networks = Seq(HostNetwork),
+        containers = Seq(
+          MesosContainer(
+            name = "Foo1",
+            resources = raml.Resources(cpus = 1.0f, mem = 128.0f),
+            healthCheck = Some(MesosHttpHealthCheck(portIndex = Some(PortReference("foo1")), path = Some("healthcheck"))),
+            endpoints = Seq(
+              raml.Endpoint(
+                name = "foo1",
+                hostPort = Some(1234)
               )
-            ),
-            MesosContainer(
-              name = "Foo2",
-              resources = raml.Resources(cpus = 1.0f, mem = 128.0f),
-              healthCheck = Some(MesosTcpHealthCheck(portIndex = Some(PortReference("foo2")))),
-              endpoints = List(
-                raml.Endpoint(
-                  name = "foo2",
-                  hostPort = Some(1235)
-                )
-              )
-            ),
-            MesosContainer(
-              name = "Foo3",
-              resources = raml.Resources(cpus = 1.0f, mem = 128.0f),
-              healthCheck = Some(MesosCommandHealthCheck(command = Command("foo")))
             )
+          ),
+          MesosContainer(
+            name = "Foo2",
+            resources = raml.Resources(cpus = 1.0f, mem = 128.0f),
+            healthCheck = Some(MesosTcpHealthCheck(portIndex = Some(PortReference("foo2")))),
+            endpoints = Seq(
+              raml.Endpoint(
+                name = "foo2",
+                hostPort = Some(1235)
+              )
+            )
+          ),
+          MesosContainer(
+            name = "Foo3",
+            resources = raml.Resources(cpus = 1.0f, mem = 128.0f),
+            healthCheck = Some(MesosCommandHealthCheck(command = Command("foo")))
           )
-        ),
+        )
+      )
+
+      val resourceMatch = RunSpecOfferMatcher.matchOffer(podSpec, offer, Seq.empty, defaultBuilderConfig.acceptedResourceRoles)
+
+      val (_, taskGroupInfo, _, _) = TaskGroupBuilder.build(
+        podSpec,
         offer,
         s => Instance.Id.forRunSpec(s),
-        defaultBuilderConfig
-      )(Seq.empty)
-
-      assert(pod.isDefined)
-
-      val (_, taskGroupInfo, _, _) = pod.get
+        defaultBuilderConfig,
+        RunSpecTaskProcessor.empty,
+        resourceMatch.asInstanceOf[ResourceMatchResponse.Match].resourceMatch
+      )
 
       assert(taskGroupInfo.getTasksCount == 3)
 
@@ -551,43 +571,45 @@ class TaskGroupBuilderTest extends UnitTest {
     "create health check definitions with container-mode networking" in {
       val offer = MarathonTestHelper.makeBasicOffer(cpus = 3.1, mem = 416.0, disk = 10.0, beginPort = 1200, endPort = 1300).build
 
-      val pod = TaskGroupBuilder.build(
-        PodDefinition(
-          id = "/product/frontend".toPath,
-          networks = Seq(ContainerNetwork("dcosnetwork")),
-          containers = List(
-            MesosContainer(
-              name = "Foo1",
-              resources = raml.Resources(cpus = 1.0f, mem = 128.0f),
-              healthCheck = Some(MesosHttpHealthCheck(portIndex = Some(PortReference("foo1")), path = Some("healthcheck"))),
-              endpoints = List(
-                raml.Endpoint(
-                  name = "foo1",
-                  containerPort = Some(1234)
-                )
+      val podSpec = PodDefinition(
+        id = "/product/frontend".toPath,
+        networks = Seq(ContainerNetwork("dcosnetwork")),
+        containers = Seq(
+          MesosContainer(
+            name = "Foo1",
+            resources = raml.Resources(cpus = 1.0f, mem = 128.0f),
+            healthCheck = Some(MesosHttpHealthCheck(portIndex = Some(PortReference("foo1")), path = Some("healthcheck"))),
+            endpoints = Seq(
+              raml.Endpoint(
+                name = "foo1",
+                containerPort = Some(1234)
               )
-            ),
-            MesosContainer(
-              name = "Foo2",
-              resources = raml.Resources(cpus = 1.0f, mem = 128.0f),
-              healthCheck = Some(MesosTcpHealthCheck(portIndex = Some(PortReference("foo2")))),
-              endpoints = List(
-                raml.Endpoint(
-                  name = "foo2",
-                  containerPort = Some(1235)
-                )
+            )
+          ),
+          MesosContainer(
+            name = "Foo2",
+            resources = raml.Resources(cpus = 1.0f, mem = 128.0f),
+            healthCheck = Some(MesosTcpHealthCheck(portIndex = Some(PortReference("foo2")))),
+            endpoints = Seq(
+              raml.Endpoint(
+                name = "foo2",
+                containerPort = Some(1235)
               )
             )
           )
-        ),
+        )
+      )
+
+      val resourceMatch = RunSpecOfferMatcher.matchOffer(podSpec, offer, Seq.empty, defaultBuilderConfig.acceptedResourceRoles)
+
+      val (_, taskGroupInfo, _, _) = TaskGroupBuilder.build(
+        podSpec,
         offer,
         s => Instance.Id.forRunSpec(s),
-        defaultBuilderConfig
-      )(Seq.empty)
-
-      assert(pod.isDefined)
-
-      val (_, taskGroupInfo, _, _) = pod.get
+        defaultBuilderConfig,
+        RunSpecTaskProcessor.empty,
+        resourceMatch.asInstanceOf[ResourceMatchResponse.Match].resourceMatch
+      )
 
       assert(taskGroupInfo.getTasksCount == 2)
 
@@ -610,29 +632,31 @@ class TaskGroupBuilderTest extends UnitTest {
     "support URL artifacts" in {
       val offer = MarathonTestHelper.makeBasicOffer(cpus = 1.1, mem = 160.0, disk = 10.0).build
 
-      val pod = TaskGroupBuilder.build(
-        PodDefinition(
-          id = "/product/frontend".toPath,
-          containers = List(
-            MesosContainer(
-              name = "Foo1",
-              resources = raml.Resources(cpus = 1.0f, mem = 128.0f),
-              artifacts = List(
-                raml.Artifact(
-                  uri = "foo"
-                )
+      val podSpec = PodDefinition(
+        id = "/product/frontend".toPath,
+        containers = Seq(
+          MesosContainer(
+            name = "Foo1",
+            resources = raml.Resources(cpus = 1.0f, mem = 128.0f),
+            artifacts = Seq(
+              raml.Artifact(
+                uri = "foo"
               )
             )
           )
-        ),
+        )
+      )
+
+      val resourceMatch = RunSpecOfferMatcher.matchOffer(podSpec, offer, Seq.empty, defaultBuilderConfig.acceptedResourceRoles)
+
+      val (_, taskGroupInfo, _, _) = TaskGroupBuilder.build(
+        podSpec,
         offer,
         s => Instance.Id.forRunSpec(s),
-        defaultBuilderConfig
-      )(Seq.empty)
-
-      assert(pod.isDefined)
-
-      val (_, taskGroupInfo, _, _) = pod.get
+        defaultBuilderConfig,
+        RunSpecTaskProcessor.empty,
+        resourceMatch.asInstanceOf[ResourceMatchResponse.Match].resourceMatch
+      )
 
       val task1Artifacts = taskGroupInfo.getTasksList.find(_.getName == "Foo1").get.getCommand.getUrisList
       assert(task1Artifacts.size == 1)
@@ -640,51 +664,129 @@ class TaskGroupBuilderTest extends UnitTest {
       assert(task1Artifacts.head.getValue == "foo")
     }
 
+    "executor info has correct values" in {
+      val offer = MarathonTestHelper.makeBasicOffer(cpus = 21.1, mem = 256.0, disk = 10.0).build
+
+      val podSpec = PodDefinition(
+        id = "/product/frontend".toPath,
+        containers = Seq(
+          MesosContainer(
+            name = "Foo1",
+            resources = raml.Resources(cpus = 1.0f, mem = 128.0f),
+            artifacts = Seq(
+              raml.Artifact(
+                uri = "foo"
+              )
+            )
+          )
+        ),
+        executorResources = Resources(cpus = 20.0)
+      )
+
+      val resourceMatch = RunSpecOfferMatcher.matchOffer(podSpec, offer, Seq.empty, defaultBuilderConfig.acceptedResourceRoles)
+
+      val (executorInfo, _, _, _) = TaskGroupBuilder.build(
+        podSpec,
+        offer,
+        s => Instance.Id.forRunSpec(s),
+        defaultBuilderConfig,
+        RunSpecTaskProcessor.empty,
+        resourceMatch.asInstanceOf[ResourceMatchResponse.Match].resourceMatch
+      )
+
+      val cpuExecutorInfo = executorInfo.getResourcesList.find(info => info.getName == "cpus")
+      assert(cpuExecutorInfo.isDefined)
+      assert(cpuExecutorInfo.get.getScalar.getValue == 20.0)
+      assert(podSpec.resources.cpus == 21.0)
+    }
+
     "support networks and port mappings for pods and containers" in {
       val offer = MarathonTestHelper.makeBasicOffer(cpus = 3.1, mem = 416.0, disk = 10.0, beginPort = 8000, endPort = 9000).build
 
-      val pod = TaskGroupBuilder.build(
-        PodDefinition(
-          id = "/product/frontend".toPath,
-          containers = List(
-            MesosContainer(
-              name = "Foo1",
-              resources = raml.Resources(cpus = 1.0f, mem = 128.0f),
-              endpoints = List(
-                raml.Endpoint(
-                  name = "webserver",
-                  containerPort = Some(80),
-                  hostPort = Some(8080),
-                  protocol = List("tcp", "udp")
-                )
-              )
-            ),
-            MesosContainer(
-              name = "Foo2",
-              resources = raml.Resources(cpus = 1.0f, mem = 128.0f),
-              endpoints = List(
-                raml.Endpoint(
-                  name = "webapp",
-                  containerPort = Some(1234),
-                  hostPort = Some(0)
-                )
+      val podSpec = PodDefinition(
+        id = "/product/frontend".toPath,
+        containers = Seq(
+          MesosContainer(
+            name = "Foo1",
+            resources = raml.Resources(cpus = 1.0f, mem = 128.0f),
+            endpoints = Seq(
+              raml.Endpoint(
+                name = "webserver",
+                containerPort = Some(80),
+                hostPort = Some(8080),
+                protocol = Seq("tcp", "udp"),
+                labels = Map("VIP_0" -> "1.1.1.1:8888")
               )
             )
           ),
-          networks = List(
-            ContainerNetwork("network-a")
+          MesosContainer(
+            name = "Foo2",
+            resources = raml.Resources(cpus = 1.0f, mem = 128.0f),
+            endpoints = Seq(
+              raml.Endpoint(
+                name = "webapp",
+                containerPort = Some(1234),
+                hostPort = Some(0),
+                protocol = Seq("tcp")
+              ),
+              raml.Endpoint(
+                name = "webapp-tls",
+                containerPort = Some(1235),
+                protocol = Seq("tcp"),
+                labels = Map("VIP_1" -> "2.2.2.2:9999")
+              )
+            )
           )
         ),
+        networks = Seq(
+          ContainerNetwork("network-a")
+        )
+      )
+
+      val resourceMatch = RunSpecOfferMatcher.matchOffer(podSpec, offer, Seq.empty, defaultBuilderConfig.acceptedResourceRoles)
+
+      val (executorInfo, taskGroupInfo, _, _) = TaskGroupBuilder.build(
+        podSpec,
         offer,
         s => Instance.Id.forRunSpec(s),
-        defaultBuilderConfig
-      )(Seq.empty)
-
-      assert(pod.isDefined)
-
-      val (executorInfo, taskGroupInfo, _, _) = pod.get
+        defaultBuilderConfig,
+        RunSpecTaskProcessor.empty,
+        resourceMatch.asInstanceOf[ResourceMatchResponse.Match].resourceMatch
+      )
 
       assert(taskGroupInfo.getTasksCount == 2)
+      val task1 = taskGroupInfo.getTasks(0)
+      assert(task1.hasDiscovery)
+      val task1Ports = task1.getDiscovery.getPorts.getPortsList.to[Seq]
+      assert(task1Ports.map(_.getProtocol) == Seq("tcp", "udp"))
+      assert(task1Ports.count(_.getName == "webserver") == 2)
+
+      withClue("expected network-scope=container and VIP_0 in port discovery info, for both tcp and udp protocols") {
+        task1Ports.forall { p =>
+          p.getNumber == 80 && {
+            val labels: Map[String, String] = p.getLabels.getLabelsList.to[Seq].map(l => l.getKey -> l.getValue).toMap
+            labels.get("network-scope").contains("container") && labels.get("VIP_0").contains("1.1.1.1:8888")
+          }
+        } shouldBe true
+      }
+
+      val task2 = taskGroupInfo.getTasks(1)
+      val task2Ports = task2.getDiscovery.getPorts.getPortsList.to[Seq]
+      assert(task2Ports.map(_.getProtocol) == Seq("tcp", "tcp"))
+
+      task2Ports.exists{ p =>
+        p.getName == "webapp" && p.getNumber == 1234 && {
+          val labels: Map[String, String] = p.getLabels.getLabelsList.to[Seq].map(l => l.getKey -> l.getValue).toMap
+          labels.get("network-scope").contains("container") && !labels.exists { case (k, v) => k.startsWith("VIP_") }
+        }
+      } shouldBe true
+
+      task2Ports.exists{ p =>
+        p.getName == "webapp-tls" && p.getNumber == 1235 && {
+          val labels: Map[String, String] = p.getLabels.getLabelsList.to[Seq].map(l => l.getKey -> l.getValue).toMap
+          labels.get("network-scope").contains("container") && labels.get("VIP_1").contains("2.2.2.2:9999")
+        }
+      } shouldBe true
 
       assert(executorInfo.getContainer.getNetworkInfosCount == 1)
 
@@ -702,45 +804,48 @@ class TaskGroupBuilderTest extends UnitTest {
     "endpoint env is set on each container" in {
       val offer = MarathonTestHelper.makeBasicOffer(cpus = 3.1, mem = 416.0, disk = 10.0, beginPort = 8000, endPort = 9000).build
 
-      val pod = TaskGroupBuilder.build(
-        PodDefinition(
-          id = "/product/frontend".toPath,
-          containers = List(
-            MesosContainer(
-              name = "Foo1",
-              resources = raml.Resources(cpus = 1.0f, mem = 128.0f),
-              endpoints = List(
-                raml.Endpoint(
-                  name = "webserver",
-                  containerPort = Some(80),
-                  hostPort = Some(8080),
-                  protocol = List("tcp", "udp")
-                )
-              )
-            ),
-            MesosContainer(
-              name = "Foo2",
-              resources = raml.Resources(cpus = 1.0f, mem = 128.0f),
-              endpoints = List(
-                raml.Endpoint(
-                  name = "webapp",
-                  containerPort = Some(1234),
-                  hostPort = Some(8081)
-                )
+      val podSpec = PodDefinition(
+        id = "/product/frontend".toPath,
+        containers = Seq(
+          MesosContainer(
+            name = "Foo1",
+            resources = raml.Resources(cpus = 1.0f, mem = 128.0f),
+            endpoints = Seq(
+              raml.Endpoint(
+                name = "webserver",
+                containerPort = Some(80),
+                hostPort = Some(8080),
+                protocol = Seq("tcp", "udp")
               )
             )
           ),
-          networks = List(
-            ContainerNetwork("network-a")
+          MesosContainer(
+            name = "Foo2",
+            resources = raml.Resources(cpus = 1.0f, mem = 128.0f),
+            endpoints = Seq(
+              raml.Endpoint(
+                name = "webapp",
+                containerPort = Some(1234),
+                hostPort = Some(8081)
+              )
+            )
           )
         ),
+        networks = Seq(
+          ContainerNetwork("network-a")
+        )
+      )
+
+      val resourceMatch = RunSpecOfferMatcher.matchOffer(podSpec, offer, Seq.empty, defaultBuilderConfig.acceptedResourceRoles)
+
+      val (_, taskGroupInfo, _, _) = TaskGroupBuilder.build(
+        podSpec,
         offer,
         s => Instance.Id.forRunSpec(s),
-        defaultBuilderConfig
-      )(Seq.empty)
-
-      assert(pod.isDefined)
-      val (_, taskGroupInfo, _, _) = pod.get
+        defaultBuilderConfig,
+        RunSpecTaskProcessor.empty,
+        resourceMatch.asInstanceOf[ResourceMatchResponse.Match].resourceMatch
+      )
 
       assert(taskGroupInfo.getTasksCount == 2)
       val task1Env = taskGroupInfo.getTasks(0).getCommand.getEnvironment.getVariablesList.map(v => v.getName -> v.getValue).toMap
@@ -771,12 +876,14 @@ class TaskGroupBuilderTest extends UnitTest {
 
       val offer = MarathonTestHelper.makeBasicOffer(cpus = 4.1, mem = 1056.0, disk = 10.0).build
       val container = MesosContainer(name = "foo", resources = raml.Resources(cpus = 1.0f, mem = 128.0f))
-      val pod = TaskGroupBuilder.build(
-        PodDefinition(id = "/product/frontend".toPath, containers = List(container)),
-        offer, Instance.Id.forRunSpec, defaultBuilderConfig, runSpecTaskProcessor)(Seq.empty)
+      val podSpec = PodDefinition(id = "/product/frontend".toPath, containers = Seq(container))
+      val resourceMatch = RunSpecOfferMatcher.matchOffer(podSpec, offer, Seq.empty, defaultBuilderConfig.acceptedResourceRoles)
 
-      pod should be(defined)
-      val (_, taskGroupInfo, _, _) = pod.get
+      val (_, taskGroupInfo, _, _) = TaskGroupBuilder.build(
+        podSpec,
+        offer, Instance.Id.forRunSpec, defaultBuilderConfig, runSpecTaskProcessor,
+        resourceMatch.asInstanceOf[ResourceMatchResponse.Match].resourceMatch
+      )
       taskGroupInfo.getTasksCount should be(1)
       taskGroupInfo.getTasks(0).getName should be(s"${container.name}-extended")
     }

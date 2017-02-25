@@ -10,19 +10,21 @@ import javax.ws.rs.core.{ Context, MediaType, Response }
 
 import akka.event.EventStream
 import akka.stream.Materializer
-import akka.stream.scaladsl.Sink
+import akka.stream.scaladsl.{ Sink, Source }
 import com.codahale.metrics.annotation.Timed
 import com.wix.accord.Validator
 import mesosphere.marathon.MarathonConf
 import mesosphere.marathon.api.v2.validation.PodsValidation
 import mesosphere.marathon.api.{ AuthResource, MarathonMediaType, RestResource, TaskKiller }
 import mesosphere.marathon.core.appinfo.{ PodSelector, PodStatusService, Selector }
+import mesosphere.marathon.core.base.Clock
 import mesosphere.marathon.core.event._
 import mesosphere.marathon.core.instance.Instance
 import mesosphere.marathon.core.pod.{ PodDefinition, PodManager }
 import mesosphere.marathon.plugin.auth._
-import mesosphere.marathon.raml.{ Pod, Raml }
+import mesosphere.marathon.raml.{ NetworkMode, Pod, Raml }
 import mesosphere.marathon.state.{ PathId, Timestamp }
+import mesosphere.marathon.util.SemanticVersion
 import play.api.libs.json.Json
 
 @Path("v2/pods")
@@ -37,17 +39,22 @@ class PodsResource @Inject() (
     podSystem: PodManager,
     podStatusService: PodStatusService,
     eventBus: EventStream,
-    mat: Materializer) extends RestResource with AuthResource {
+    mat: Materializer,
+    clock: Clock,
+    scheduler: MarathonScheduler) extends RestResource with AuthResource {
 
   import PodsResource._
-  implicit val podDefValidator = PodsValidation.podDefValidator(config.availableFeatures)
+  implicit def podDefValidator: Validator[Pod] =
+    PodsValidation.podDefValidator(
+      config.availableFeatures,
+      scheduler.mesosMasterVersion().getOrElse(SemanticVersion(0, 0, 0)))
 
   // If we change/add/upgrade the notion of a Pod and can't do it purely in the internal model,
   // update the json first
   private def normalize(pod: Pod): Pod = {
     if (pod.networks.exists(_.name.isEmpty)) {
       val networks = pod.networks.map { network =>
-        if (network.name.isEmpty) {
+        if (network.mode == NetworkMode.Container && network.name.isEmpty) {
           config.defaultNetworkName.get.fold(network) { name =>
             network.copy(name = Some(name))
           }
@@ -62,7 +69,8 @@ class PodsResource @Inject() (
   }
 
   // If we can normalize using the internal model, do that instead.
-  private def normalize(pod: PodDefinition): PodDefinition = identity(pod)
+  // The version of the pod is changed here to make sure, the user has not send a version.
+  private def normalize(pod: PodDefinition): PodDefinition = pod.copy(version = clock.now())
 
   private def marshal(pod: Pod): String = Json.stringify(Json.toJson(pod))
 
@@ -142,7 +150,7 @@ class PodsResource @Inject() (
 
   @GET @Timed
   def findAll(@Context req: HttpServletRequest): Response = authenticated(req) { implicit identity =>
-    val pods = result(podSystem.findAll(isAuthorized(ViewRunSpec, _)).runWith(Sink.seq))
+    val pods = podSystem.findAll(isAuthorized(ViewRunSpec, _))
     ok(Json.stringify(Json.toJson(pods.map(Raml.toRaml(_)))))
   }
 
@@ -154,7 +162,7 @@ class PodsResource @Inject() (
     import PathId._
 
     withValid(id.toRootPath) { id =>
-      result(podSystem.find(id)).fold(notFound(s"""{"message": "pod with $id does not exist"}""")) { pod =>
+      podSystem.find(id).fold(notFound(s"""{"message": "pod with $id does not exist"}""")) { pod =>
         withAuthorization(ViewRunSpec, pod) {
           ok(marshal(pod))
         }
@@ -171,7 +179,7 @@ class PodsResource @Inject() (
     import PathId._
 
     withValid(id.toRootPath) { id =>
-      withAuthorization(DeleteRunSpec, result(podSystem.find(id)), unknownPod(id)) { pod =>
+      withAuthorization(DeleteRunSpec, podSystem.find(id), unknownPod(id)) { pod =>
 
         val deployment = result(podSystem.delete(id, force))
 
@@ -210,7 +218,7 @@ class PodsResource @Inject() (
     import PathId._
     import mesosphere.marathon.api.v2.json.Formats.TimestampFormat
     withValid(id.toRootPath) { id =>
-      result(podSystem.find(id)).fold(notFound(id)) { pod =>
+      podSystem.find(id).fold(notFound(id)) { pod =>
         withAuthorization(ViewRunSpec, pod) {
           val versions = podSystem.versions(id).runWith(Sink.seq)
           ok(Json.stringify(Json.toJson(result(versions))))
@@ -240,7 +248,7 @@ class PodsResource @Inject() (
   @Path("::status")
   @SuppressWarnings(Array("OptionGet", "FilterOptionAndGet"))
   def allStatus(@Context req: HttpServletRequest): Response = authenticated(req) { implicit identity =>
-    val future = podSystem.ids().mapAsync(Int.MaxValue) { id =>
+    val future = Source(podSystem.ids()).mapAsync(Int.MaxValue) { id =>
       podStatusService.selectPodStatus(id, authzSelector)
     }.filter(_.isDefined).map(_.get).runWith(Sink.seq)
 
@@ -295,7 +303,7 @@ class PodsResource @Inject() (
       }
     }
 
-  private def notFound(id: PathId): Response = notFound(s"""{"message": "pod '$id' does not exist"}""")
+  private def notFound(id: PathId): Response = unknownPod(id)
 }
 
 object PodsResource {

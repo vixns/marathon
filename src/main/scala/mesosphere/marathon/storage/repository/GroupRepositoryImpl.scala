@@ -15,8 +15,8 @@ import mesosphere.marathon.core.storage.repository.impl.PersistenceStoreVersione
 import mesosphere.marathon.core.storage.store.impl.BasePersistenceStore
 import mesosphere.marathon.core.storage.store.impl.cache.{ LazyCachingPersistenceStore, LazyVersionCachingPersistentStore, LoadTimeCachingPersistenceStore }
 import mesosphere.marathon.core.storage.store.{ IdResolver, PersistenceStore }
-import mesosphere.marathon.state.{ AppDefinition, Group, PathId, Timestamp }
-import mesosphere.marathon.stream._
+import mesosphere.marathon.state.{ AppDefinition, Group, RootGroup, PathId, Timestamp }
+import mesosphere.marathon.stream.Implicits._
 import mesosphere.marathon.util.{ RichLock, toRichFuture }
 
 import scala.annotation.tailrec
@@ -78,45 +78,47 @@ private[storage] case class StoredGroup(
         pod.id -> pod
     }(collection.breakOut)
 
-    val groups = await(Future.sequence(groupFutures)).toSet
+    val groups: Map[PathId, Group] = await(Future.sequence(groupFutures)).map(group => group.id -> group)(collection.breakOut)
 
     Group(
       id = id,
       apps = apps,
       pods = pods,
-      groups = groups,
+      groupsById = groups,
       dependencies = dependencies,
-      version = Timestamp(version)
+      version = Timestamp(version),
+      transitiveAppsById = apps ++ groups.values.flatMap(_.transitiveAppsById),
+      transitivePodsById = pods ++ groups.values.flatMap(_.transitivePodsById)
     )
   }
 
   def toProto: Protos.GroupDefinition = {
     import StoredGroup.DateFormat
 
-    val apps = appIds.map {
-      case (app, appVersion) =>
-        Protos.GroupDefinition.AppReference.newBuilder()
-          .setId(app.safePath)
-          .setVersion(DateFormat.format(appVersion))
-          .build()
-    }
-
-    val pods = podIds.map {
-      case (pod, podVersion) =>
-        Protos.GroupDefinition.AppReference.newBuilder()
-          .setId(pod.safePath)
-          .setVersion(DateFormat.format(podVersion))
-          .build()
-    }
-
-    Protos.GroupDefinition.newBuilder
+    val b = Protos.GroupDefinition.newBuilder
       .setId(id.safePath)
-      .addAllApps(apps)
-      .addAllPods(pods)
-      .addAllGroups(storedGroups.map(_.toProto))
-      .addAllDependencies(dependencies.map(_.safePath))
       .setVersion(DateTimeFormatter.ISO_OFFSET_DATE_TIME.format(version))
-      .build()
+
+    appIds.foreach {
+      case (app, appVersion) =>
+        b.addApps(
+          Protos.GroupDefinition.AppReference.newBuilder()
+            .setId(app.safePath)
+            .setVersion(DateFormat.format(appVersion)))
+    }
+
+    podIds.foreach {
+      case (pod, podVersion) =>
+        b.addPods(
+          Protos.GroupDefinition.AppReference.newBuilder()
+            .setId(pod.safePath)
+            .setVersion(DateFormat.format(podVersion)))
+    }
+
+    storedGroups.foreach { storedGroup => b.addGroups(storedGroup.toProto) }
+    dependencies.foreach { dependency => b.addDependencies(dependency.safePath) }
+
+    b.build()
   }
 }
 
@@ -126,9 +128,9 @@ object StoredGroup {
   def apply(group: Group): StoredGroup =
     StoredGroup(
       id = group.id,
-      appIds = group.apps.mapValues(_.version.toOffsetDateTime),
-      podIds = group.pods.mapValues(_.version.toOffsetDateTime),
-      storedGroups = group.groups.map(StoredGroup(_))(collection.breakOut),
+      appIds = group.apps.map { case (id, app) => id -> app.version.toOffsetDateTime },
+      podIds = group.pods.map { case (id, pod) => id -> pod.version.toOffsetDateTime },
+      storedGroups = group.groupsById.map { case (_, group) => StoredGroup(group) }(collection.breakOut),
       dependencies = group.dependencies,
       version = group.version.toOffsetDateTime)
 
@@ -178,7 +180,7 @@ class StoredGroupRepositoryImpl[K, C, S](
   This gives us read-after-write consistency.
    */
   private val lock = RichLock()
-  private var rootFuture = Future.failed[Group](new Exception("Root not yet loaded"))
+  private var rootFuture = Future.failed[RootGroup](new Exception("Root not yet loaded"))
   private[storage] var beforeStore = Option.empty[(StoredGroup) => Future[Done]]
   private val versionCache = TrieMap.empty[OffsetDateTime, Group]
 
@@ -203,32 +205,32 @@ class StoredGroupRepositoryImpl[K, C, S](
   }
 
   @SuppressWarnings(Array("all")) // async/await
-  private[storage] def underlyingRoot(): Future[Group] = async { // linter:ignore UnnecessaryElseBranch
+  private[storage] def underlyingRoot(): Future[RootGroup] = async { // linter:ignore UnnecessaryElseBranch
     val root = await(storedRepo.get(RootId))
     val resolved = root.map(_.resolve(appRepository, podRepository))
     resolved match {
-      case Some(x) => await(x)
-      case None => Group.empty
+      case Some(x) => RootGroup.fromGroup(await(x))
+      case None => RootGroup.empty
     }
   }
 
   @SuppressWarnings(Array("all")) // async/await
-  override def root(): Future[Group] =
+  override def root(): Future[RootGroup] =
     async { // linter:ignore UnnecessaryElseBranch
       await(lock(rootFuture).asTry) match {
         case Failure(_) =>
-          val promise = Promise[Group]()
+          val promise = Promise[RootGroup]()
           lock {
             rootFuture = promise.future
           }
           val unresolved = await(storedRepo.get(RootId))
           val newRoot = unresolved.map(_.resolve(appRepository, podRepository)) match {
             case Some(group) =>
-              await(group)
+              RootGroup.fromGroup(await(group))
             case None =>
               // In case there is no root group yet a new (Empty) group is returned after it is persisted
               // to the repository. Otherwise attempts to read this group later would fail.
-              val root = Group.empty
+              val root = RootGroup.empty
               await(storeRoot(root, Nil, Nil, Nil, Nil))
               root
           }
@@ -243,18 +245,18 @@ class StoredGroupRepositoryImpl[K, C, S](
     storedRepo.versions(RootId)
 
   @SuppressWarnings(Array("all")) // async/await
-  override def rootVersion(version: OffsetDateTime): Future[Option[Group]] = {
+  override def rootVersion(version: OffsetDateTime): Future[Option[RootGroup]] = {
     async {
       versionCache.get(version) match {
         case Some(group) =>
-          Some(group)
+          Some(RootGroup.fromGroup(group))
         case None =>
           val unresolved = await(storedRepo.getVersion(RootId, version))
           unresolved.map(_.resolve(appRepository, podRepository)) match {
             case Some(group) =>
               val resolved = await(group)
               addToVersionCache(Some(version), resolved)
-              Some(resolved)
+              Some(RootGroup.fromGroup(resolved))
             case None =>
               logger.warn(s"Failed to load root group with version=$version")
               None
@@ -264,16 +266,16 @@ class StoredGroupRepositoryImpl[K, C, S](
   }
 
   @SuppressWarnings(Array("all")) // async/await
-  override def storeRoot(group: Group, updatedApps: Seq[AppDefinition], deletedApps: Seq[PathId],
+  override def storeRoot(rootGroup: RootGroup, updatedApps: Seq[AppDefinition], deletedApps: Seq[PathId],
     updatedPods: Seq[PodDefinition], deletedPods: Seq[PathId]): Future[Done] =
     async {
-      val storedGroup = StoredGroup(group)
+      val storedGroup = StoredGroup(rootGroup)
       beforeStore match {
         case Some(preStore) =>
           await(preStore(storedGroup))
         case _ =>
       }
-      val promise = Promise[Group]()
+      val promise = Promise[RootGroup]()
       val oldRootFuture = lock {
         val old = rootFuture
         rootFuture = promise.future
@@ -298,11 +300,11 @@ class StoredGroupRepositoryImpl[K, C, S](
           val storedRoot = await(storedRepo.store(storedGroup).asTry)
           storedRoot match {
             case Success(_) =>
-              addToVersionCache(None, group)
-              promise.success(group)
+              addToVersionCache(None, rootGroup)
+              promise.success(rootGroup)
               Done
             case Failure(ex) =>
-              logger.error(s"Unable to store updated group $group", ex)
+              logger.error(s"Unable to store updated group $rootGroup", ex)
               revertRoot(ex)
           }
         case (Failure(ex), Success(_)) =>
@@ -321,9 +323,9 @@ class StoredGroupRepositoryImpl[K, C, S](
     }
 
   @SuppressWarnings(Array("all")) // async/await
-  override def storeRootVersion(group: Group, updatedApps: Seq[AppDefinition], updatedPods: Seq[PodDefinition]): Future[Done] =
+  override def storeRootVersion(rootGroup: RootGroup, updatedApps: Seq[AppDefinition], updatedPods: Seq[PodDefinition]): Future[Done] =
     async {
-      val storedGroup = StoredGroup(group)
+      val storedGroup = StoredGroup(rootGroup)
       beforeStore match {
         case Some(preStore) =>
           await(preStore(storedGroup))
@@ -339,10 +341,10 @@ class StoredGroupRepositoryImpl[K, C, S](
           val storedRoot = await(storedRepo.storeVersion(storedGroup).asTry)
           storedRoot match {
             case Success(_) =>
-              addToVersionCache(None, group)
+              addToVersionCache(None, rootGroup)
               Done
             case Failure(ex) =>
-              logger.error(s"Unable to store updated group $group", ex)
+              logger.error(s"Unable to store updated group $rootGroup", ex)
               throw ex
           }
         case Failure(ex) =>
@@ -359,6 +361,14 @@ class StoredGroupRepositoryImpl[K, C, S](
     versionCache.remove(version)
     persistenceStore.deleteVersion(RootId, version)
   }
+
+  override def appVersions(id: PathId): Source[OffsetDateTime, NotUsed] = appRepository.versions(id)
+
+  override def appVersion(id: PathId, version: OffsetDateTime): Future[Option[AppDefinition]] = appRepository.getVersion(id, version)
+
+  override def podVersions(id: PathId): Source[OffsetDateTime, NotUsed] = podRepository.versions(id)
+
+  override def podVersion(id: PathId, version: OffsetDateTime): Future[Option[PodDefinition]] = podRepository.getVersion(id, version)
 }
 
 object StoredGroupRepositoryImpl {

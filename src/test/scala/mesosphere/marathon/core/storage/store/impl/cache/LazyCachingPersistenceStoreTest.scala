@@ -1,4 +1,5 @@
-package mesosphere.marathon.core.storage.store.impl.cache
+package mesosphere.marathon
+package core.storage.store.impl.cache
 
 import java.util.UUID
 
@@ -85,7 +86,7 @@ class LazyCachingPersistenceStoreTest extends AkkaUnitTest
 
         store.versionCache.size should be(1)
         store.versionCache.contains(cacheKey) should be(true)
-        store.versionCache(cacheKey) should contain theSameElementsAs (Seq(original.version, updated.version))
+        store.versionCache(cacheKey) should contain theSameElementsAs Seq(original.version, updated.version)
 
         store.versionedValueCache.size should be(2)
         store.versionedValueCache((storageId, original.version)) should be(Some(original))

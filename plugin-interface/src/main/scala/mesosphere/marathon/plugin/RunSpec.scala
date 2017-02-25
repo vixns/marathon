@@ -1,4 +1,5 @@
-package mesosphere.marathon.plugin
+package mesosphere.marathon
+package plugin
 
 /**
   * A Marathon RunSpec Definition
@@ -70,6 +71,17 @@ trait ContainerSpec {
 }
 
 /**
+  * A network definition.
+  */
+trait NetworkSpec {
+
+  /**
+    * Optional labels for a given network, may be empty.
+    */
+  val labels: Map[String, String]
+}
+
+/**
   * A pod is a run spec that launches a task group.
   */
 trait PodSpec extends RunSpec {
@@ -79,4 +91,18 @@ trait PodSpec extends RunSpec {
     */
   val containers: Seq[ContainerSpec]
 
+  /**
+    * The environment shared for all containers inside this pod.
+    */
+  val env: Map[String, EnvVarValue]
+
+  /**
+    * The networks that this pod will be a member of.
+    */
+  val networks: Seq[NetworkSpec]
+
+  /**
+    * The labels in that pod.
+    */
+  val labels: Map[String, String]
 }

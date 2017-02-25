@@ -1,4 +1,5 @@
-package mesosphere.marathon.core.task
+package mesosphere.marathon
+package core.task
 
 import mesosphere.UnitTest
 import mesosphere.marathon.core.base.ConstantClock
@@ -36,12 +37,12 @@ class TaskStatusUpdateTest extends UnitTest {
     "updating a running task with a TASK_UNREACHABLE" should {
       val f = new Fixture
 
-      val task = TestTaskBuilder.Helper.minimalRunning(appId = f.appId, since = f.clock.now)
+      val task = TestTaskBuilder.Helper.minimalRunning(appId = f.appId, since = f.clock.now())
 
       f.clock += 5.seconds
 
-      val status = MesosTaskStatusTestHelper.unreachable(task.taskId, f.clock.now)
-      val update = TaskUpdateOperation.MesosUpdate(TaskCondition(status), status, f.clock.now)
+      val status = MesosTaskStatusTestHelper.unreachable(task.taskId, f.clock.now())
+      val update = TaskUpdateOperation.MesosUpdate(TaskCondition(status), status, f.clock.now())
 
       val effect = task.update(update)
 
@@ -58,8 +59,8 @@ class TaskStatusUpdateTest extends UnitTest {
 
       f.clock += 5.seconds
 
-      val status = MesosTaskStatusTestHelper.unreachable(task.taskId, f.clock.now)
-      val update = TaskUpdateOperation.MesosUpdate(TaskCondition(status), status, f.clock.now)
+      val status = MesosTaskStatusTestHelper.unreachable(task.taskId, f.clock.now())
+      val update = TaskUpdateOperation.MesosUpdate(TaskCondition(status), status, f.clock.now())
 
       val effect = task.update(update)
 

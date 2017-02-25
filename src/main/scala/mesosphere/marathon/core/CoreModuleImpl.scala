@@ -1,4 +1,5 @@
-package mesosphere.marathon.core
+package mesosphere.marathon
+package core
 
 import javax.inject.Named
 
@@ -7,6 +8,7 @@ import akka.event.EventStream
 import com.google.inject.{ Inject, Provider }
 import mesosphere.marathon.core.auth.AuthModule
 import mesosphere.marathon.core.base.{ ActorsModule, Clock, ShutdownHooks }
+import mesosphere.marathon.core.deployment.DeploymentModule
 import mesosphere.marathon.core.election._
 import mesosphere.marathon.core.event.EventModule
 import mesosphere.marathon.core.flow.FlowModule
@@ -30,8 +32,6 @@ import mesosphere.marathon.core.task.tracker.InstanceTrackerModule
 import mesosphere.marathon.io.storage.StorageProvider
 import mesosphere.marathon.metrics.Metrics
 import mesosphere.marathon.storage.StorageModule
-import mesosphere.marathon.{ DeploymentService, MarathonConf, MarathonSchedulerDriverHolder, ModuleNames }
-import mesosphere.util.CapConcurrentExecutions
 
 import scala.concurrent.ExecutionContext
 import scala.util.Random
@@ -53,7 +53,6 @@ class CoreModuleImpl @Inject() (
   clock: Clock,
   storage: StorageProvider,
   scheduler: Provider[DeploymentService],
-  @Named(ModuleNames.SERIALIZE_GROUP_UPDATES) serializeUpdates: CapConcurrentExecutions,
   instanceUpdateSteps: Seq[InstanceChangeHandler])
     extends CoreModule {
 
@@ -99,7 +98,7 @@ class CoreModuleImpl @Inject() (
 
   private[this] lazy val offerMatcherManagerModule = new OfferMatcherManagerModule(
     // infrastructure
-    clock, random, metrics, marathonConf,
+    clock, random, metrics, marathonConf, actorSystem.scheduler,
     leadershipModule
   )
 
@@ -182,24 +181,36 @@ class CoreModuleImpl @Inject() (
 
   override lazy val healthModule: HealthModule = new HealthModule(
     actorSystem, taskTerminationModule.taskKillService, eventStream,
-    taskTrackerModule.instanceTracker, storageModule.appRepository)
+    taskTrackerModule.instanceTracker, groupManagerModule.groupManager)
 
   // GROUP MANAGER
 
   override lazy val groupManagerModule: GroupManagerModule = new GroupManagerModule(
     marathonConf,
-    leadershipModule,
-    serializeUpdates,
     scheduler,
     storageModule.groupRepository,
     storage,
-    eventStream,
-    metrics)(actorsModule.materializer)
+    metrics)(ExecutionContext.global, eventStream)
 
   // PODS
 
-  override lazy val podModule: PodModule =
-    PodModule(groupManagerModule.groupManager, storageModule.podRepository)(ExecutionContext.global)
+  override lazy val podModule: PodModule = PodModule(groupManagerModule.groupManager)
+
+  // DEPLOYMENT MANAGER
+
+  override lazy val deploymentModule: DeploymentModule = new DeploymentModule(
+    marathonConf,
+    leadershipModule,
+    taskTrackerModule.instanceTracker,
+    taskTerminationModule.taskKillService,
+    appOfferMatcherModule.launchQueue,
+    schedulerActions, // alternatively schedulerActionsProvider.get()
+    storage,
+    healthModule.healthCheckManager,
+    eventStream,
+    readinessModule.readinessCheckExecutor,
+    storageModule.deploymentRepository
+  )(actorsModule.materializer)
 
   // GREEDY INSTANTIATION
   //
@@ -213,7 +224,7 @@ class CoreModuleImpl @Inject() (
 
   taskJobsModule.handleOverdueTasks(
     taskTrackerModule.instanceTracker,
-    taskTrackerModule.instanceReservationTimeoutHandler,
+    taskTrackerModule.stateOpProcessor,
     taskTerminationModule.taskKillService
   )
   taskJobsModule.expungeOverdueLostTasks(taskTrackerModule.instanceTracker, taskTrackerModule.stateOpProcessor)
@@ -225,4 +236,24 @@ class CoreModuleImpl @Inject() (
   historyModule
   healthModule
   podModule
+
+  // The core (!) of the problem is that SchedulerActions are needed by MarathonModule::provideSchedulerActor
+  // and CoreModule::deploymentModule. So until MarathonSchedulerActor is also a core component
+  // and moved to CoreModules we can either:
+  //
+  // 1. Provide it in MarathonModule, inject as a constructor parameter here, in CoreModuleImpl and deal
+  //    with Guice's "circular references involving constructors" e.g. by making it a Provider[SchedulerActions]
+  //    to defer it's creation or:
+  // 2. Create it here though it's not a core module and export it back via @Provider for MarathonModule
+  //    to inject it in provideSchedulerActor(...) method.
+  //
+  // TODO: this can be removed when MarathonSchedulerActor becomes a core component
+  override lazy val schedulerActions: SchedulerActions = new SchedulerActions(
+    storageModule.groupRepository,
+    healthModule.healthCheckManager,
+    taskTrackerModule.instanceTracker,
+    appOfferMatcherModule.launchQueue,
+    eventStream,
+    taskTerminationModule.taskKillService)(ExecutionContext.global)
+
 }

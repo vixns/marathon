@@ -1,4 +1,5 @@
-package mesosphere.marathon.storage.repository
+package mesosphere.marathon
+package storage.repository
 
 import java.time.OffsetDateTime
 
@@ -10,12 +11,12 @@ import akka.stream.scaladsl.Source
 import akka.{ Done, NotUsed }
 import com.typesafe.scalalogging.StrictLogging
 import mesosphere.marathon.Protos
+import mesosphere.marathon.core.deployment.DeploymentPlan
 import mesosphere.marathon.core.storage.repository.impl.PersistenceStoreRepository
 import mesosphere.marathon.core.storage.store.{ IdResolver, PersistenceStore }
 import mesosphere.marathon.metrics.Metrics
-import mesosphere.marathon.state.Timestamp
+import mesosphere.marathon.state.{ RootGroup, Timestamp }
 import mesosphere.marathon.storage.repository.GcActor.{ StoreApp, StorePlan, StorePod, StoreRoot }
-import mesosphere.marathon.upgrade.DeploymentPlan
 
 import scala.async.Async.{ async, await }
 import scala.concurrent.{ ExecutionContext, Future, Promise }
@@ -33,7 +34,7 @@ case class StoredPlan(
       val (original, target) = (await(originalFuture), await(targetFuture))
       (original, target) match {
         case (Some(o), Some(t)) =>
-          Some(DeploymentPlan(o, t, version = Timestamp(version), id = Some(id)))
+          Some(DeploymentPlan(RootGroup.fromGroup(o), RootGroup.fromGroup(t), version = Timestamp(version), id = Some(id)))
         case (_, None) | (None, _) =>
           logger.error(s"While retrieving $id, either original ($original)"
             + s" or target ($target) were no longer available")

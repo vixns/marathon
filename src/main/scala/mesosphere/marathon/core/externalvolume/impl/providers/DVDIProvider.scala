@@ -6,7 +6,7 @@ import com.wix.accord.dsl._
 import mesosphere.marathon.core.externalvolume.impl.providers.OptionSupport._
 import mesosphere.marathon.core.externalvolume.impl.{ ExternalVolumeProvider, ExternalVolumeValidations }
 import mesosphere.marathon.state._
-import mesosphere.marathon.stream._
+import mesosphere.marathon.stream.Implicits._
 import org.apache.mesos.Protos.Volume.Mode
 import org.apache.mesos.Protos.{ ContainerInfo, Parameter, Parameters, Volume => MesosVolume }
 
@@ -89,13 +89,13 @@ private[impl] object DVDIProviderValidations extends ExternalVolumeValidations {
 
   // group-level validation for DVDI volumes: the same volume name may only be referenced by a single
   // task instance across the entire cluster.
-  override lazy val rootGroup = new Validator[Group] {
-    override def apply(g: Group): Result = {
+  override lazy val rootGroup = new Validator[RootGroup] {
+    override def apply(rootGroup: RootGroup): Result = {
       val appsByVolume: Map[String, Set[PathId]] =
-        g.transitiveApps
+        rootGroup.transitiveApps
           .flatMap { app => namesOfMatchingVolumes(app).map(_ -> app.id) }
           .groupBy { case (volumeName, _) => volumeName }
-          .mapValues(_.map { case (volumeName, appId) => appId })
+          .map { case (volumeName, volumes) => volumeName -> volumes.map { case (_, appId) => appId } }
 
       val appValid: Validator[AppDefinition] = {
         def volumeNameUnique(appId: PathId): Validator[ExternalVolume] = {
@@ -116,12 +116,12 @@ private[impl] object DVDIProviderValidations extends ExternalVolumeValidations {
 
       def groupValid: Validator[Group] = validator[Group] { group =>
         group.apps.values as "apps" is every(appValid)
-        group.groups is every(groupValid)
+        group.groupsById.values as "groups" is every(groupValid)
       }
 
       // We need to call the validators recursively such that the "description" of the rule violations
       // is correctly calculated.
-      groupValid(g)
+      groupValid(rootGroup)
     }
 
   }
@@ -146,7 +146,7 @@ private[impl] object DVDIProviderValidations extends ExternalVolumeValidations {
 
       /** @return a count of volume references-by-name within an app spec */
       def volumeNameCounts(app: AppDefinition): Map[String, Int] =
-        namesOfMatchingVolumes(app).groupBy(identity).mapValues(_.size)
+        namesOfMatchingVolumes(app).groupBy(identity).map { case (name, names) => name -> names.size }(collection.breakOut)
     }
 
     val validContainer = {
@@ -164,9 +164,6 @@ private[impl] object DVDIProviderValidations extends ExternalVolumeValidations {
         volume.external.options is isTrue(s"must only contain $driverOption")(_.filterKeys(_ != driverOption).isEmpty)
         volume.external.size is isTrue("must be undefined for Docker containers")(_.isEmpty)
         volume.containerPath is notOneOf(DotPaths: _*)
-        // TODO(jdef) change this once docker containerizer supports relative containerPaths
-        volume.containerPath should
-          matchRegexWithFailureMessage(AbsolutePathPattern, "value must be an absolute path")
       }
 
       def ifDVDIVolume(vtor: Validator[ExternalVolume]): Validator[ExternalVolume] = conditional(matchesProvider)(vtor)

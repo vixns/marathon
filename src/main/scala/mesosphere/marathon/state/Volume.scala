@@ -6,9 +6,9 @@ import java.util.regex.Pattern
 import com.wix.accord._
 import com.wix.accord.dsl._
 import mesosphere.marathon.Protos.Constraint
-import mesosphere.marathon.api.v2.Validation.{ oneOf, _ }
+import mesosphere.marathon.api.v2.Validation._
 import mesosphere.marathon.core.externalvolume.ExternalVolumes
-import mesosphere.marathon.stream._
+import mesosphere.marathon.stream.Implicits._
 import org.apache.mesos.Protos.Resource.DiskInfo.Source
 import org.apache.mesos.Protos.Volume.Mode
 import org.apache.mesos.{ Protos => Mesos }
@@ -118,14 +118,14 @@ object DockerVolume {
 
 case class DiskSource(diskType: DiskType, path: Option[String]) {
   if (diskType == DiskType.Root)
-    require(path == None, "Path is not allowed for diskType")
+    require(path.isEmpty, "Path is not allowed for diskType")
   else
-    require(path != None, "Path is required for non-root diskTypes")
+    require(path.isDefined, "Path is required for non-root diskTypes")
 
   override def toString: String =
     path match {
-      case Some(p) => s"${diskType}:${p}"
-      case None => diskType.toString()
+      case Some(p) => s"$diskType:$p"
+      case None => diskType.toString
     }
 
   def asMesos: Option[Source] = (path, diskType) match {
@@ -187,7 +187,7 @@ object DiskType {
       case None => DiskType.Root
       case Some(Source.Type.PATH) => DiskType.Path
       case Some(Source.Type.MOUNT) => DiskType.Mount
-      case Some(other) => throw new RuntimeException(s"unknown mesos disk type: ${other}")
+      case Some(other) => throw new RuntimeException(s"unknown mesos disk type: $other")
     }
 }
 

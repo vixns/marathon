@@ -2,12 +2,11 @@ package mesosphere.util
 
 import java.util.concurrent.Executors
 
-import org.scalatest.{ WordSpecLike, Matchers }
+import mesosphere.UnitTest
 
-import scala.concurrent.duration.Duration
-import scala.concurrent.{ Await, Future, ExecutionContext }
+import scala.concurrent.{ ExecutionContext, Future }
 
-class ConcurrentSetTest extends WordSpecLike with Matchers {
+class ConcurrentSetTest extends UnitTest {
 
   implicit val ec = ExecutionContext.fromExecutor(Executors.newCachedThreadPool())
 
@@ -21,7 +20,7 @@ class ConcurrentSetTest extends WordSpecLike with Matchers {
         for (i <- start until end) set.add(i)
       }
 
-      Await.ready(Future.sequence(futures), Duration.Inf)
+      Future.sequence(futures).futureValue
 
       set.size should be(1000000)
       (0 until 1000000).forall(set) should be(true)
@@ -34,14 +33,14 @@ class ConcurrentSetTest extends WordSpecLike with Matchers {
         for (i <- 0 until 100000) set.add(i)
       }
 
-      Await.ready(Future.sequence(futures), Duration.Inf)
+      Future.sequence(futures).futureValue
 
       set.size should be(100000)
       (0 until 100000).forall(set) should be(true)
     }
 
     "contain all added and none of the removed values" in {
-      val set = ConcurrentSet[Int]((0 until 500000): _*)
+      val set = ConcurrentSet[Int](0 until 500000: _*)
 
       val addFutures = for (i <- 5 until 10) yield Future {
         val start = i * 100000
@@ -55,7 +54,7 @@ class ConcurrentSetTest extends WordSpecLike with Matchers {
         for (i <- start until end) set.remove(i)
       }
 
-      Await.ready(Future.sequence(addFutures ++ removeFutures), Duration.Inf)
+      Future.sequence(addFutures ++ removeFutures).futureValue
 
       set.size should be(500000)
       (500000 until 1000000).forall(set) should be(true)

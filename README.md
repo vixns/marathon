@@ -1,5 +1,5 @@
 [![Stories in Ready](https://badge.waffle.io/mesosphere/marathon.png?label=ready&title=Ready)](https://waffle.io/mesosphere/marathon)
-# [Marathon](https://mesosphere.github.io/marathon/) [![Build Status](https://jenkins.mesosphere.com/service/jenkins/buildStatus/icon?job=marathon-snapshot-packages-master&build=273)](https://jenkins.mesosphere.com/service/jenkins/buildStatus/icon?job=marathon-snapshot-packages-master&build=273) [![Coverage Status](https://coveralls.io/repos/mesosphere/marathon/badge.svg?branch=master)](https://coveralls.io/r/mesosphere/marathon?branch=master)
+# [Marathon](https://mesosphere.github.io/marathon/) [![Build Status](https://jenkins.mesosphere.com/service/jenkins/buildStatus/icon?job=marathon-pipelines/master)](https://jenkins.mesosphere.com/service/jenkins/buildStatus/icon?job=marathon-pipelines/master)
 
 Marathon is a production-proven [Apache Mesos][Mesos] framework for container orchestration. [DC/OS](https://dcos.io/get-started/#marathon) is the easiest way to start using Marathon.
 
@@ -107,19 +107,32 @@ options, see [the Marathon docs](https://mesosphere.github.io/marathon/docs/).
 
 See [the documentation](https://mesosphere.github.io/marathon/docs/developing-vm.html) on how to run Marathon locally inside a virtual machine.
 
-### Running the development Docker
+### Running in Development Mode on Docker
 
-Build tip:
+* Note: Currently the Docker container fails due to strange behavior from the latest Mesos version.  There will be an error about `work_dir` that is still unresolved, much like this:
 
-    docker build -t marathon-head .
+        Failed to start a local cluster while loading agent flags from the environment: Flag 'work_dir' is required, but it was not provided
 
-Run it:
+Build it:
+
+    mesosVersion=$(sed -n 's/^.*MesosDebian = "\(.*\)"/\1/p' <./project/Dependencies.scala)
+    docker build -t marathon-head --build-arg MESOS_VERSION=$mesosVersion .
+
+A running zookeeper instance is required, if there isn't one already available, there is a docker image available for this:
+
+    docker run --name some-zookeeper --restart always -d zookeeper
+
+Run it with zookeeper container:
+
+    docker run --link some-zookeeper:zookeeper marathon-head --master local --zk zk://zookeeper:2181/marathon
+
+Or run it without zookeeper container:
 
     docker run marathon-head --master local --zk zk://localhost:2181/marathon
 
-If you want to inspect the contents of the Docker:
+If you want to inspect the contents of the Docker container:
 
-    docker run -i -t --entrypoint=/bin/bash marathon-head -s
+    docker run -it --entrypoint=/bin/bash marathon-head -s
 
 ### Marathon UI
 
@@ -138,6 +151,7 @@ To develop on the web UI look into the instructions of the [Marathon UI](https:/
 * [Ruby gem marathon_deploy](https://github.com/eBayClassifiedsGroup/marathon_deploy) alternative command line tool to deploy using json or yaml files with ENV macros.
 * [Scala client](https://github.com/guidewire/marathon-client), developed at Guidewire
 * [Java client](https://github.com/mohitsoni/marathon-client) by Mohit Soni
+* [Maven plugin](https://github.com/dcos-labs/dcos-maven-plugin), developed by [Johannes Unterstein](https://github.com/unterstein)
 * [Maven plugin](https://github.com/holidaycheck/marathon-maven-plugin), developed at [HolidayCheck](http://www.holidaycheck.com/)
 * [Python client](https://github.com/thefactory/marathon-python), developed at [The Factory](http://www.thefactory.com)
 * [Python client](https://github.com/Wizcorp/marathon-client.py), developed at [Wizcorp](http://www.wizcorp.jp)
@@ -156,6 +170,7 @@ Across all installations Marathon is managing applications on more than 100,000 
 * [AllUnite](https://allunite.com/)
 * [Argus Cyber Security](http://argus-sec.com/)
 * [Artirix](http://www.artirix.com/)
+* [Arukas](https://arukas.io/)
 * [bol.com](https://www.bol.com/)
 * [Brand24](https://brand24.com/)
 * [Branding Brand](http://www.brandingbrand.com/)
@@ -192,6 +207,7 @@ Across all installations Marathon is managing applications on more than 100,000 
 * [RelateIQ](https://www.salesforceiq.com/)
 * [Refinery29](https://www.refinery29.com)
 * [Sailthru](http://www.sailthru.com/)
+* [SAKURA Internet Inc](https://www.sakura.ad.jp/)
 * [sloppy.io](http://sloppy.io/)
 * [SmartProcure](https://smartprocure.us/)
 * [Strava](https://www.strava.com)

@@ -1,31 +1,31 @@
-package mesosphere.marathon.api.v2
+package mesosphere.marathon
+package api.v2
 
 import javax.servlet.http.HttpServletResponse
+
 import akka.event.EventStream
 import akka.stream.Materializer
 import akka.stream.scaladsl.Source
 import com.codahale.metrics.MetricRegistry
 import mesosphere.AkkaUnitTest
-import mesosphere.marathon._
 import mesosphere.marathon.api.v2.json.Formats.TimestampFormat
 import mesosphere.marathon.api.{ RestResource, TaskKiller, TestAuthFixture }
 import mesosphere.marathon.core.appinfo.PodStatusService
+import mesosphere.marathon.core.base.ConstantClock
 import mesosphere.marathon.core.condition.Condition
 import mesosphere.marathon.core.group.GroupManager
-import mesosphere.marathon.core.instance.Instance.InstanceState
 import mesosphere.marathon.core.instance.Instance
+import mesosphere.marathon.core.instance.Instance.InstanceState
 import mesosphere.marathon.core.pod.impl.PodManagerImpl
-import mesosphere.marathon.core.pod.{ PodDefinition, PodManager }
-import mesosphere.marathon.core.storage.store.impl.memory.InMemoryPersistenceStore
+import mesosphere.marathon.core.pod.{ MesosContainer, PodDefinition, PodManager }
 import mesosphere.marathon.metrics.Metrics
 import mesosphere.marathon.plugin.auth.{ Authenticator, Authorizer }
-import mesosphere.marathon.raml.{ FixedPodScalingPolicy, Pod, Raml }
+import mesosphere.marathon.raml.{ ExecutorResources, FixedPodScalingPolicy, NetworkMode, Pod, Raml, Resources }
 import mesosphere.marathon.state.PathId._
-import mesosphere.marathon.state.Timestamp
-import mesosphere.marathon.storage.repository.PodRepository
+import mesosphere.marathon.state.{ Timestamp, UnreachableStrategy }
 import mesosphere.marathon.test.Mockito
-import mesosphere.marathon.upgrade.DeploymentPlan
-
+import mesosphere.marathon.core.deployment.DeploymentPlan
+import mesosphere.marathon.util.SemanticVersion
 import play.api.libs.json._
 
 import scala.collection.immutable.Seq
@@ -46,6 +46,23 @@ class PodsResourceTest extends AkkaUnitTest with Mockito {
                    |     "exec": { "command": { "shell": "sleep 1" } } } ] }
                  """.stripMargin
 
+  val podSpecJsonWithContainerNetworking = """
+                   | { "id": "/mypod", "networks": [ { "mode": "container" } ], "containers": [
+                   |   { "name": "webapp",
+                   |     "resources": { "cpus": 0.03, "mem": 64 },
+                   |     "image": { "kind": "DOCKER", "id": "busybox" },
+                   |     "exec": { "command": { "shell": "sleep 1" } } } ] }
+                 """.stripMargin
+
+  val podSpecJsonWithExecutorResources = """
+                      | { "id": "/mypod", "networks": [ { "mode": "host" } ], "containers": [
+                      |   { "name": "webapp",
+                      |     "resources": { "cpus": 0.03, "mem": 64 },
+                      |     "image": { "kind": "DOCKER", "id": "busybox" },
+                      |     "exec": { "command": { "shell": "sleep 1" } } } ],
+                      |     "executorResources": { "cpus": 100, "mem": 100 } }
+                    """.stripMargin
+
   "PodsResource" should {
     "support pods" in {
       val f = Fixture()
@@ -58,18 +75,75 @@ class PodsResourceTest extends AkkaUnitTest with Mockito {
 
     "be able to create a simple single-container pod from docker image w/ shell command" in {
       implicit val podSystem = mock[PodManager]
-      val f = Fixture()
+      val f = Fixture(configArgs = Seq("--default_network_name", "blah")) // should not be injected into host network spec
 
       podSystem.create(any, eq(false)).returns(Future.successful(DeploymentPlan.empty))
 
-      val response = f.podsResource.create(podSpecJson.getBytes(), false, f.auth.request)
+      val response = f.podsResource.create(podSpecJson.getBytes(), force = false, f.auth.request)
 
       withClue(s"response body: ${response.getEntity}") {
         response.getStatus should be(HttpServletResponse.SC_CREATED)
 
         val parsedResponse = Option(response.getEntity.asInstanceOf[String]).map(Json.parse)
-        parsedResponse should not be (None)
-        parsedResponse.map(_.as[Pod]) should not be (None) // validate that we DID get back a pod definition
+        parsedResponse should be (defined)
+        val maybePod = parsedResponse.map(_.as[Pod])
+        maybePod should be (defined) // validate that we DID get back a pod definition
+        val pod = maybePod.get
+        pod.networks(0).mode should be (NetworkMode.Host)
+        pod.networks(0).name should not be (defined)
+        pod.executorResources should be (defined) // validate that executor resources are defined
+        pod.executorResources.get should be (ExecutorResources()) // validate that the executor resources has default values
+
+        response.getMetadata.containsKey(RestResource.DeploymentHeader) should be(true)
+      }
+    }
+
+    "create a pod w/ container networking" in {
+      implicit val podSystem = mock[PodManager]
+      val f = Fixture(configArgs = Seq("--default_network_name", "blah")) // required since network name is missing from JSON
+
+      podSystem.create(any, eq(false)).returns(Future.successful(DeploymentPlan.empty))
+
+      val response = f.podsResource.create(podSpecJsonWithContainerNetworking.getBytes(), force = false, f.auth.request)
+
+      withClue(s"response body: ${response.getEntity}") {
+        response.getStatus should be(HttpServletResponse.SC_CREATED)
+
+        val parsedResponse = Option(response.getEntity.asInstanceOf[String]).map(Json.parse)
+        parsedResponse should be (defined)
+        val maybePod = parsedResponse.map(_.as[Pod])
+        maybePod should be (defined) // validate that we DID get back a pod definition
+        val pod = maybePod.get
+        pod.networks(0).mode should be (NetworkMode.Container)
+        pod.networks(0).name should be (Some("blah"))
+        pod.executorResources should be (defined) // validate that executor resources are defined
+        pod.executorResources.get should be (ExecutorResources()) // validate that the executor resources has default values
+
+        response.getMetadata.containsKey(RestResource.DeploymentHeader) should be(true)
+      }
+    }
+
+    "create a pod with custom executor resource declaration" in {
+      implicit val podSystem = mock[PodManager]
+      val f = Fixture()
+
+      podSystem.create(any, eq(false)).returns(Future.successful(DeploymentPlan.empty))
+
+      val response = f.podsResource.create(podSpecJsonWithExecutorResources.getBytes(), force = false, f.auth.request)
+
+      withClue(s"response body: ${response.getEntity}") {
+        response.getStatus should be(HttpServletResponse.SC_CREATED)
+
+        val parsedResponse = Option(response.getEntity.asInstanceOf[String]).map(Json.parse)
+        parsedResponse should be (defined)
+        val maybePod = parsedResponse.map(_.as[Pod])
+        maybePod should be (defined) // validate that we DID get back a pod definition
+        val pod = maybePod.get
+        pod.executorResources should be (defined) // validate that executor resources are defined
+        pod.executorResources.get.cpus should be (100)
+        pod.executorResources.get.mem should be (100)
+        // disk is not assigned in the posted pod definition, therefore this should be the default value 10
+        pod.executorResources.get.disk should be (10)
 
         response.getMetadata.containsKey(RestResource.DeploymentHeader) should be(true)
       }
@@ -88,14 +162,14 @@ class PodsResourceTest extends AkkaUnitTest with Mockito {
                        |     "image": { "kind": "DOCKER", "id": "busybox" },
                        |     "exec": { "command": { "shell": "sleep 1" } } } ] }
                      """.stripMargin
-      val response = f.podsResource.update("/mypod", postJson.getBytes(), false, f.auth.request)
+      val response = f.podsResource.update("/mypod", postJson.getBytes(), force = false, f.auth.request)
 
       withClue(s"response body: ${response.getEntity}") {
         response.getStatus should be(HttpServletResponse.SC_OK)
 
         val parsedResponse = Option(response.getEntity.asInstanceOf[String]).map(Json.parse)
-        parsedResponse should not be (None)
-        parsedResponse.map(_.as[Pod]) should not be (None) // validate that we DID get back a pod definition
+        parsedResponse should not be None
+        parsedResponse.map(_.as[Pod]) should not be None // validate that we DID get back a pod definition
 
         response.getMetadata.containsKey(RestResource.DeploymentHeader) should be(true)
       }
@@ -114,7 +188,7 @@ class PodsResourceTest extends AkkaUnitTest with Mockito {
                        |     "resources": { "cpus": 0.03, "mem": 64 },
                        |     "exec": { "command": { "shell": "sleep 1" } } } ] }
                      """.stripMargin
-      val response = f.podsResource.update("/mypod", postJson.getBytes(), false, f.auth.request)
+      val response = f.podsResource.update("/mypod", postJson.getBytes(), force = false, f.auth.request)
 
       withClue(s"response body: ${response.getEntity}") {
         response.getStatus should be(HttpServletResponse.SC_OK)
@@ -135,9 +209,9 @@ class PodsResourceTest extends AkkaUnitTest with Mockito {
       implicit val podSystem = mock[PodManager]
       val f = Fixture()
 
-      podSystem.find(any).returns(Future.successful(Some(PodDefinition())))
+      podSystem.find(any).returns(Some(PodDefinition()))
       podSystem.delete(any, eq(false)).returns(Future.successful(DeploymentPlan.empty))
-      val response = f.podsResource.remove("/mypod", false, f.auth.request)
+      val response = f.podsResource.remove("/mypod", force = false, f.auth.request)
 
       withClue(s"response body: ${response.getEntity}") {
         response.getStatus should be(HttpServletResponse.SC_ACCEPTED)
@@ -153,13 +227,13 @@ class PodsResourceTest extends AkkaUnitTest with Mockito {
       implicit val podSystem = mock[PodManager]
       val f = Fixture()
 
-      podSystem.find(any).returns(Future.successful(Option.empty[PodDefinition]))
+      podSystem.find(any).returns(Option.empty[PodDefinition])
       val response = f.podsResource.find("/mypod", f.auth.request)
 
       withClue(s"response body: ${response.getEntity}") {
         response.getStatus should be(HttpServletResponse.SC_NOT_FOUND)
         val body = Option(response.getEntity.asInstanceOf[String])
-        body should not be (None)
+        body should not be None
         body.foreach(_ should include("mypod does not exist"))
       }
     }
@@ -170,10 +244,9 @@ class PodsResourceTest extends AkkaUnitTest with Mockito {
 
       "there are no versions" when {
         "list no versions" in {
-          val podRepository = PodRepository.inMemRepository(new InMemoryPersistenceStore())
           val groupManager = mock[GroupManager]
-          groupManager.pod(any).returns(Future.successful(None))
-          implicit val podManager = PodManagerImpl(groupManager, podRepository)
+          groupManager.pod(any).returns(None)
+          implicit val podManager = PodManagerImpl(groupManager)
           val f = Fixture()
 
           val response = f.podsResource.versions("/id", f.auth.request)
@@ -182,29 +255,30 @@ class PodsResourceTest extends AkkaUnitTest with Mockito {
           }
         }
         "return 404 when asking for a version" in {
-          val podRepository = PodRepository.inMemRepository(new InMemoryPersistenceStore())
           val groupManager = mock[GroupManager]
-          groupManager.pod(any).returns(Future.successful(None))
-          implicit val podManager = PodManagerImpl(groupManager, podRepository)
+          groupManager.pod(any).returns(None)
+          groupManager.podVersions(any).returns(Source.empty)
+          groupManager.podVersion(any, any).returns(Future.successful(None))
+          implicit val podManager = PodManagerImpl(groupManager)
           val f = Fixture()
 
           val response = f.podsResource.version("/id", "2008", f.auth.request)
           withClue(s"response body: ${response.getEntity}") {
             response.getStatus should be(HttpServletResponse.SC_NOT_FOUND)
+            response.getEntity.toString should be ("{\"message\":\"Pod '/id' does not exist\"}")
           }
         }
       }
       "there are versions" when {
         import mesosphere.marathon.state.PathId._
-        val pod1 = PodDefinition("/id".toRootPath)
+        val pod1 = PodDefinition("/id".toRootPath, containers = Seq(MesosContainer(name = "foo", resources = Resources())))
         val pod2 = pod1.copy(version = pod1.version + 1.minute)
         "list the available versions" in {
-          val podRepository = PodRepository.inMemRepository(new InMemoryPersistenceStore())
-          podRepository.store(pod1).futureValue
-          podRepository.store(pod2).futureValue
           val groupManager = mock[GroupManager]
-          groupManager.pod(any).returns(Future.successful(Some(pod2)))
-          implicit val podManager = PodManagerImpl(groupManager, podRepository)
+          groupManager.pod(any).returns(Some(pod2))
+          groupManager.podVersions(pod1.id).returns(Source(Seq(pod1.version.toOffsetDateTime, pod2.version.toOffsetDateTime)))
+
+          implicit val podManager = PodManagerImpl(groupManager)
           val f = Fixture()
 
           val response = f.podsResource.versions("/id", f.auth.request)
@@ -215,10 +289,12 @@ class PodsResourceTest extends AkkaUnitTest with Mockito {
           }
         }
         "get a specific version" in {
-          val podRepository = PodRepository.inMemRepository(new InMemoryPersistenceStore())
-          podRepository.store(pod1).futureValue
-          podRepository.store(pod2).futureValue
-          implicit val podManager = PodManagerImpl(mock[GroupManager], podRepository)
+          val groupManager = mock[GroupManager]
+          groupManager.pod(any).returns(Some(pod2))
+          groupManager.podVersions(pod1.id).returns(Source(Seq(pod1.version.toOffsetDateTime, pod2.version.toOffsetDateTime)))
+          groupManager.podVersion(pod1.id, pod1.version.toOffsetDateTime).returns(Future.successful(Some(pod1)))
+          groupManager.podVersion(pod1.id, pod2.version.toOffsetDateTime).returns(Future.successful(Some(pod2)))
+          implicit val podManager = PodManagerImpl(groupManager)
           val f = Fixture()
 
           val response = f.podsResource.version("/id", pod1.version.toString, f.auth.request)
@@ -233,8 +309,13 @@ class PodsResourceTest extends AkkaUnitTest with Mockito {
         "attempting to kill a single instance" in {
           implicit val killer = mock[TaskKiller]
           val f = Fixture()
-          val instance = Instance(Instance.Id.forRunSpec("/id1".toRootPath), Instance.AgentInfo("", None, Nil),
-            InstanceState(Condition.Running, Timestamp.now(), Some(Timestamp.now), None), Map.empty, runSpecVersion = Timestamp.now())
+          val instance = Instance(
+            Instance.Id.forRunSpec("/id1".toRootPath), Instance.AgentInfo("", None, Nil),
+            InstanceState(Condition.Running, Timestamp.now(), Some(Timestamp.now()), None),
+            Map.empty,
+            runSpecVersion = Timestamp.now(),
+            unreachableStrategy = UnreachableStrategy.default()
+          )
           killer.kill(any, any, any)(any) returns Future.successful(Seq(instance))
           val response = f.podsResource.killInstance("/id", instance.instanceId.toString, f.auth.request)
           withClue(s"response body: ${response.getEntity}") {
@@ -247,9 +328,14 @@ class PodsResourceTest extends AkkaUnitTest with Mockito {
           implicit val killer = mock[TaskKiller]
           val instances = Seq(
             Instance(Instance.Id.forRunSpec("/id1".toRootPath), Instance.AgentInfo("", None, Nil),
-              InstanceState(Condition.Running, Timestamp.now(), Some(Timestamp.now), None), Map.empty, runSpecVersion = Timestamp.now()),
+              InstanceState(Condition.Running, Timestamp.now(), Some(Timestamp.now()), None), Map.empty,
+              runSpecVersion = Timestamp.now(),
+              unreachableStrategy = UnreachableStrategy.default()
+            ),
             Instance(Instance.Id.forRunSpec("/id1".toRootPath), Instance.AgentInfo("", None, Nil),
-              InstanceState(Condition.Running, Timestamp.now(), Some(Timestamp.now), None), Map.empty, runSpecVersion = Timestamp.now()))
+              InstanceState(Condition.Running, Timestamp.now(), Some(Timestamp.now()), None), Map.empty,
+              runSpecVersion = Timestamp.now(),
+              unreachableStrategy = UnreachableStrategy.default()))
 
           val f = Fixture()
 
@@ -271,7 +357,7 @@ class PodsResourceTest extends AkkaUnitTest with Mockito {
         "delete a pod without auth access" in {
           implicit val podSystem = mock[PodManager]
           val f = Fixture()
-          podSystem.find(any).returns(Future.successful(Some(PodDefinition())))
+          podSystem.find(any).returns(Some(PodDefinition()))
           podSystem.delete(any, eq(false)).returns(Future.successful(DeploymentPlan.empty))
           f.auth.authorized = false
           val response = f.podsResource.remove("/mypod", force = false, f.auth.request)
@@ -286,10 +372,10 @@ class PodsResourceTest extends AkkaUnitTest with Mockito {
       class UnAuthorizedFixture(authorized: Boolean, authenticated: Boolean) {
         implicit val podSystem = mock[PodManager]
         val fixture = Fixture()
-        podSystem.findAll(any).returns(Source.empty)
-        podSystem.find(any).returns(Future.successful(Some(PodDefinition())))
+        podSystem.findAll(any).returns(Seq.empty)
+        podSystem.find(any).returns(Some(PodDefinition()))
         podSystem.delete(any, any).returns(Future.successful(DeploymentPlan.empty))
-        podSystem.ids().returns(Source.empty)
+        podSystem.ids().returns(Set.empty)
         podSystem.version(any, any).returns(Future.successful(Some(PodDefinition())))
         fixture.auth.authorized = authorized
         fixture.auth.authenticated = authenticated
@@ -390,10 +476,13 @@ class PodsResourceTest extends AkkaUnitTest with Mockito {
       podStatusService: PodStatusService = mock[PodStatusService],
       killService: TaskKiller = mock[TaskKiller],
       eventBus: EventStream = mock[EventStream],
-      mat: Materializer = mock[Materializer]): Fixture = {
+      mat: Materializer = mock[Materializer],
+      scheduler: MarathonScheduler = mock[MarathonScheduler]): Fixture = {
       val config = AllConf.withTestConfig(configArgs: _*)
       implicit val authz: Authorizer = auth.auth
       implicit val authn: Authenticator = auth.auth
+      implicit val clock = ConstantClock()
+      scheduler.mesosMasterVersion() returns Some(SemanticVersion(0, 0, 0))
       new Fixture(
         new PodsResource(config),
         auth,

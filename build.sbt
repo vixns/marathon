@@ -7,12 +7,18 @@ import sbtrelease.ReleaseStateTransformations._
 
 import scalariform.formatter.preferences.{AlignArguments, AlignParameters, AlignSingleLineCaseStatements, CompactControlReadability, DanglingCloseParenthesis, DoubleIndentClassDeclaration, FormatXml, FormattingPreferences, IndentSpaces, IndentWithTabs, MultilineScaladocCommentsStartOnFirstLine, PlaceScaladocAsterisksBeneathSecondAsterisk, Preserve, PreserveSpaceBeforeArguments, SpaceBeforeColon, SpaceInsideBrackets, SpaceInsideParentheses, SpacesAroundMultiImports, SpacesWithinPatternBinders}
 
+lazy val SerialIntegrationTest = config("serial-integration") extend Test
 lazy val IntegrationTest = config("integration") extend Test
+lazy val UnstableTest = config("unstable") extend Test
+lazy val UnstableIntegrationTest = config("unstable-integration") extend Test
+
 def formattingTestArg(target: File) = Tests.Argument("-u", target.getAbsolutePath, "-eDFG")
 
-// 0.1.15 has tons of false positives in async/await
 resolvers += Resolver.sonatypeRepo("snapshots")
-addCompilerPlugin("org.psywerx.hairyfotr" %% "linter" % "0.1.16")
+addCompilerPlugin("org.psywerx.hairyfotr" %% "linter" % "0.1.17")
+
+
+lazy val checkDoublePackage = taskKey[Unit]("Checks all scala sources use a double declaration")
 
 /**
   * This on load trigger is used to set parameters in teamcity.
@@ -61,7 +67,10 @@ lazy val formatSettings = SbtScalariform.scalariformSettings ++ Seq(
     .setPreference(SpacesWithinPatternBinders, true)
 )
 
-lazy val commonSettings = inConfig(IntegrationTest)(Defaults.testTasks) ++ Seq(
+lazy val commonSettings = inConfig(SerialIntegrationTest)(Defaults.testTasks) ++
+  inConfig(IntegrationTest)(Defaults.testTasks) ++
+  inConfig(UnstableTest)(Defaults.testTasks) ++
+  inConfig(UnstableIntegrationTest)(Defaults.testTasks) ++ Seq(
   autoCompilerPlugins := true,
   organization := "mesosphere.marathon",
   scalaVersion := "2.11.8",
@@ -76,7 +85,6 @@ lazy val commonSettings = inConfig(IntegrationTest)(Defaults.testTasks) ++ Seq(
     "-Xlog-reflective-calls",
     "-Xlint",
     "-Xfatal-warnings",
-    "-Ywarn-unused-import",
     "-Yno-adapted-args",
     "-Ywarn-numeric-widen",
     //"-Ywarn-dead-code", We should turn this one on soon
@@ -96,10 +104,9 @@ lazy val commonSettings = inConfig(IntegrationTest)(Defaults.testTasks) ++ Seq(
     "-encoding", "UTF-8", "-source", "1.8", "-target", "1.8", "-Xlint:unchecked", "-Xlint:deprecation"
   ),
   resolvers ++= Seq(
-    "Typesafe Releases" at "http://repo.typesafe.com/typesafe/releases/",
-    "Spray Maven Repository" at "http://repo.spray.io/",
+    "Typesafe Releases" at "https://repo.typesafe.com/typesafe/releases/",
     "Apache Shapshots" at "https://repository.apache.org/content/repositories/snapshots/",
-    "Mesosphere Public Repo" at "http://downloads.mesosphere.com/maven"
+    "Mesosphere Public Repo" at "https://downloads.mesosphere.com/maven"
   ),
   cancelable in Global := true,
   releaseProcess := Seq[ReleaseStep](
@@ -112,34 +119,93 @@ lazy val commonSettings = inConfig(IntegrationTest)(Defaults.testTasks) ++ Seq(
     pushChanges
   ),
 
+  checkDoublePackage := {
+    ((sources in Compile).value ++ (sources in Test).value).withFilter(_.toPath.endsWith(".scala")).foreach { file =>
+      IO.reader(file) { reader =>
+        println(s"Checking $file")
+        var pkgFound = false
+        while(!pkgFound) {
+          val line = Option(reader.readLine())
+          line.fold {
+            pkgFound = true
+          } { pkg =>
+            if (pkg.startsWith("package")) {
+              pkgFound = true
+            }
+            if (pkg.startsWith("package mesosphere.marathon") && pkg.trim().length > "package mesosphere.marathon".length) {
+              sys.error(s"""$file does not use double package notation. e.g.:
+                           |package mesosphere.marathon
+                           |package ${pkg.replaceAll("package mesosphere.marathon.", "")}
+              """.stripMargin)
+            }
+          }
+        }
+      }
+    }
+  },
+  compile in Compile := {
+    checkDoublePackage.value
+    (compile in Compile).value
+  },
   publishTo := Some(s3resolver.value(
     "Mesosphere Public Repo (S3)",
     s3("downloads.mesosphere.io/maven")
   )),
   s3credentials := new EnvironmentVariableCredentialsProvider() | new InstanceProfileCredentialsProvider(),
 
-  testListeners := Seq(),
+  testListeners := Seq(new PhabricatorTestReportListener(target.value / "phabricator-test-reports")),
   parallelExecution in Test := true,
   testForkedParallel in Test := true,
-  testOptions in Test := Seq(formattingTestArg(target.value / "test-reports"), Tests.Argument("-l", "mesosphere.marathon.IntegrationTest")),
+  testOptions in Test := Seq(formattingTestArg(target.value / "test-reports"),
+    Tests.Argument("-l", "mesosphere.marathon.IntegrationTest",
+      "-l", "mesosphere.marathon.SerialIntegrationTest",
+      "-l", "mesosphere.marathon.UnstableTest",
+      "-y", "org.scalatest.WordSpec")),
   fork in Test := true,
 
+  parallelExecution in UnstableTest := true,
+  testForkedParallel in UnstableTest := true,
+  testOptions in UnstableTest := Seq(formattingTestArg(target.value / "test-reports" / "unstable"), Tests.Argument(
+    "-l", "mesosphere.marathon.IntegrationTest",
+    "-l", "mesosphere.marathon.SerialIntegrationTest",
+    "-y", "org.scalatest.WordSpec")),
+  fork in UnstableTest := true,
+
+  fork in SerialIntegrationTest := true,
+  testOptions in SerialIntegrationTest := Seq(formattingTestArg(target.value / "test-reports" / "serial-integration"),
+    Tests.Argument(
+      "-n", "mesosphere.marathon.SerialIntegrationTest",
+      "-l", "mesosphere.marathon.UnstableTest",
+      "-y", "org.scalatest.WordSpec")),
+  parallelExecution in SerialIntegrationTest := false,
+  testForkedParallel in SerialIntegrationTest := false,
+
   fork in IntegrationTest := true,
-  testOptions in IntegrationTest := Seq(formattingTestArg(target.value / "test-reports" / "integration"), Tests.Argument("-n", "mesosphere.marathon.IntegrationTest")),
-  parallelExecution in IntegrationTest := false,
-  testForkedParallel in IntegrationTest := false,
-  testGrouping in IntegrationTest := (definedTests in IntegrationTest).value.map { test =>
-    Tests.Group(name = test.name, tests = Seq(test),
-      runPolicy = SubProcess(ForkOptions((javaHome in IntegrationTest).value,
-        (outputStrategy in IntegrationTest).value, Nil, Some(baseDirectory.value),
-        (javaOptions in IntegrationTest).value, (connectInput in IntegrationTest).value,
-        (envVars in IntegrationTest).value
-      )))
+  testOptions in IntegrationTest := Seq(formattingTestArg(target.value / "test-reports" / "integration"),
+    Tests.Argument(
+      "-n", "mesosphere.marathon.IntegrationTest",
+      "-l", "mesosphere.marathon.SerialIntegrationTest",
+      "-l", "mesosphere.marathon.UnstableTest",
+      "-y", "org.scalatest.WordSpec")),
+  parallelExecution in IntegrationTest := true,
+  testForkedParallel in IntegrationTest := true,
+  concurrentRestrictions in IntegrationTest := Seq(Tags.limitAll(math.max(1, java.lang.Runtime.getRuntime.availableProcessors() / 2))),
+  test in IntegrationTest := {
+    (test in IntegrationTest).value
+    (test in SerialIntegrationTest).value
   },
 
-  scapegoatVersion := "1.2.1",
+  fork in UnstableIntegrationTest := true,
+  testOptions in UnstableIntegrationTest := Seq(formattingTestArg(target.value / "test-reports" / "unstable-integration"),
+    Tests.Argument(
+      "-n", "mesosphere.marathon.IntegrationTest",
+      "-l", "mesosphere.marathon.SerialIntegrationTest",
+      "-y", "org.scalatest.WordSpec")),
+  parallelExecution in UnstableIntegrationTest := true,
 
-  coverageMinimum := 69,
+  scapegoatVersion := "1.3.0",
+
+  coverageMinimum := 67,
   coverageFailOnMinimum := true
 )
 
@@ -162,11 +228,12 @@ lazy val asmSettings = Seq(
       "jsp-api-2.1.jar"
     )
     (fullClasspath in assembly).value.filter { x => exclude(x.data.getName) }
-  }
+  },
+  test in assembly := {}
 )
 
 lazy val packagingSettings = Seq(
-  dockerBaseImage in Docker := "java:8-jdk",
+  dockerBaseImage in Docker := "openjdk:8u121-jdk",
   dockerExposedPorts in Docker := Seq(8080),
   dockerRepository in Docker := Some("mesosphere"),
   dockerCommands ++= Seq(
@@ -181,7 +248,10 @@ lazy val packagingSettings = Seq(
 
 lazy val `plugin-interface` = (project in file("plugin-interface"))
     .enablePlugins(GitBranchPrompt, CopyPasteDetector)
+    .configs(SerialIntegrationTest)
     .configs(IntegrationTest)
+    .configs(UnstableTest)
+    .configs(UnstableIntegrationTest)
     .settings(commonSettings : _*)
     .settings(formatSettings : _*)
     .settings(
@@ -190,9 +260,13 @@ lazy val `plugin-interface` = (project in file("plugin-interface"))
     )
 
 lazy val marathon = (project in file("."))
+  .configs(SerialIntegrationTest)
   .configs(IntegrationTest)
+  .configs(UnstableTest)
+  .configs(UnstableIntegrationTest)
   .enablePlugins(BuildInfoPlugin, GitBranchPrompt,
-    JavaServerAppPackaging, DockerPlugin, CopyPasteDetector, RamlGeneratorPlugin)
+    JavaServerAppPackaging, DockerPlugin, CopyPasteDetector, RamlGeneratorPlugin,
+    DoublePackagePlugin)
   .dependsOn(`plugin-interface`)
   .settings(commonSettings: _*)
   .settings(formatSettings: _*)
@@ -214,24 +288,30 @@ lazy val marathon = (project in file("."))
   )
 
 lazy val `mesos-simulation` = (project in file("mesos-simulation"))
-    .configs(IntegrationTest)
-    .enablePlugins(GitBranchPrompt, CopyPasteDetector)
-    .settings(commonSettings: _*)
-    .settings(formatSettings: _*)
-    .dependsOn(marathon % "compile->compile; test->test")
-    .settings(
-      name := "mesos-simulation"
-    )
+  .configs(SerialIntegrationTest)
+  .configs(IntegrationTest)
+  .configs(UnstableTest)
+  .configs(UnstableIntegrationTest)
+  .enablePlugins(GitBranchPrompt, CopyPasteDetector)
+  .settings(commonSettings: _*)
+  .settings(formatSettings: _*)
+  .dependsOn(marathon % "compile->compile; test->test")
+  .settings(
+    name := "mesos-simulation"
+  )
 
 // see also, benchmark/README.md
 lazy val benchmark = (project in file("benchmark"))
+  .configs(SerialIntegrationTest)
   .configs(IntegrationTest)
+  .configs(UnstableTest)
+  .configs(UnstableIntegrationTest)
   .enablePlugins(JmhPlugin, GitBranchPrompt, CopyPasteDetector)
   .settings(commonSettings : _*)
   .settings(formatSettings: _*)
   .dependsOn(marathon % "compile->compile; test->test")
   .settings(
     testOptions in Test += Tests.Argument(TestFrameworks.JUnit),
-    libraryDependencies ++= Dependencies.benchmark
+    libraryDependencies ++= Dependencies.benchmark,
+    generatorType in Jmh := "asm"
   )
-

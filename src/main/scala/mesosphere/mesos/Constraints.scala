@@ -4,7 +4,7 @@ import mesosphere.marathon.Protos.Constraint
 import mesosphere.marathon.Protos.Constraint.Operator
 import mesosphere.marathon.core.instance.Instance
 import mesosphere.marathon.state.RunSpec
-import mesosphere.marathon.stream._
+import mesosphere.marathon.stream.Implicits._
 import org.apache.mesos.Protos.{ Attribute, Offer, Value }
 import org.slf4j.LoggerFactory
 
@@ -67,7 +67,7 @@ object Constraints {
       // Minimum group count
       val minimum = List(GroupByDefault, getIntValue(value, GroupByDefault)).max
       // Group tasks by the constraint value, and calculate the task count of each group
-      val groupedTasks = allPlaced.groupBy(groupFunc).mapValues(_.size)
+      val groupedTasks = allPlaced.groupBy(groupFunc).map { case (k, v) => k -> v.size }
       // Task count of the smallest group
       val minCount = groupedTasks.values.reduceOption(_ min _).getOrElse(0)
 
@@ -81,7 +81,7 @@ object Constraints {
 
     private def checkMaxPer(constraintValue: String, maxCount: Int, groupFunc: (Placed) => Option[String]): Boolean = {
       // Group tasks by the constraint value, and calculate the task count of each group
-      val groupedTasks = allPlaced.groupBy(groupFunc).mapValues(_.size)
+      val groupedTasks = allPlaced.groupBy(groupFunc).map { case (k, v) => k -> v.size }
 
       groupedTasks.find(_._1.contains(constraintValue)).forall(_._2 < maxCount)
     }

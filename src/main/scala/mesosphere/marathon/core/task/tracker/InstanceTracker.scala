@@ -20,7 +20,6 @@ import scala.concurrent.{ ExecutionContext, Future }
   */
 trait InstanceTracker {
 
-  def specInstancesLaunchedSync(pathId: PathId): Seq[Instance]
   def specInstancesSync(pathId: PathId): Seq[Instance]
   def specInstances(pathId: PathId)(implicit ec: ExecutionContext): Future[Seq[Instance]]
 
@@ -30,10 +29,6 @@ trait InstanceTracker {
   def instancesBySpec()(implicit ec: ExecutionContext): Future[InstanceTracker.InstancesBySpec]
 
   def countLaunchedSpecInstancesSync(appId: PathId): Int
-  def countLaunchedSpecInstancesSync(appId: PathId, filter: Instance => Boolean): Int
-  def countSpecInstancesSync(appId: PathId): Int
-  def countSpecInstancesSync(appId: PathId, filter: Instance => Boolean): Int
-  def countSpecInstances(appId: PathId)(implicit ec: ExecutionContext): Future[Int]
 
   def hasSpecInstancesSync(appId: PathId): Boolean
   def hasSpecInstances(appId: PathId)(implicit ec: ExecutionContext): Future[Boolean]
